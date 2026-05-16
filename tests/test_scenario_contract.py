@@ -33,10 +33,10 @@ EXPECTED_SCENARIO_FILES = {
 }
 
 SCENARIO_DIRS = [
-    Path("scenarios/agent_under_test"),
-    Path("scenarios/agent_under_test_codex"),
-    Path("scenarios/agent_under_test_codex_planner"),
-    Path("scenarios/agent_under_test_codex_python"),
+    Path("scenarios/track_1_agent_under_test"),
+    Path("scenarios/track_2_agent_under_test_codex"),
+    Path("scenarios/track_2_agent_under_test_codex_planner"),
+    Path("scenarios/track_2_agent_under_test_codex_python"),
 ]
 
 
@@ -53,7 +53,7 @@ class ScenarioContractTest(unittest.TestCase):
             "agent_under_test": {
                 "build": {
                     "context": ".",
-                    "dockerfile": "src/agent_under_test/Dockerfile.agent-under-test",
+                    "dockerfile": "src/track_1_agent_under_test/Dockerfile.track-1-agent-under-test",
                 },
                 "env": {"AGENT_LLM": "gemini/gemini-2.5-flash"},
             },
@@ -63,7 +63,7 @@ class ScenarioContractTest(unittest.TestCase):
     def test_compose_generation_uses_evaluator_and_agent_under_test(self) -> None:
         compose = generate_docker_compose(
             self._scenario(),
-            output_dir=Path("scenarios/agent_under_test"),
+            output_dir=Path("scenarios/track_1_agent_under_test"),
         )
 
         self.assertIn("  evaluator:", compose)
@@ -104,12 +104,12 @@ class ScenarioContractTest(unittest.TestCase):
                     self.assertEqual(config["tasks_disambiguation_num_tasks"], -1)
 
     def test_compose_up_command_uses_root_env_file(self) -> None:
-        command = compose_up_command(Path("scenarios/agent_under_test/docker-compose.yml"))
+        command = compose_up_command(Path("scenarios/track_1_agent_under_test/docker-compose.yml"))
 
         self.assertEqual(
             command,
             "docker compose --env-file .env -f "
-            "scenarios/agent_under_test/docker-compose.yml up --abort-on-container-exit",
+            "scenarios/track_1_agent_under_test/docker-compose.yml up --abort-on-container-exit",
         )
 
     def test_generated_a2a_scenario_uses_singular_aut_contract(self) -> None:
@@ -176,7 +176,7 @@ class ScenarioContractTest(unittest.TestCase):
         payload = build_output_payload(
             req=req,
             evaluator_url=evaluator_url,
-            scenario_path=Path("scenarios/agent_under_test/local_smoke.toml"),
+            scenario_path=Path("scenarios/track_1_agent_under_test/local_smoke.toml"),
             scenario_data={
                 "agent_under_test": {
                     "endpoint": "http://127.0.0.1:8080",
@@ -232,7 +232,7 @@ cmd = "python src/evaluator/server.py --host 127.0.0.1 --port 8081"
 
 [agent_under_test]
 endpoint = "http://127.0.0.1:8080"
-cmd = "python src/agent_under_test/server.py --host 127.0.0.1 --port 8080"
+cmd = "python src/track_1_agent_under_test/server.py --host 127.0.0.1 --port 8080"
 
 [config]
 num_trials = 1

@@ -1,0 +1,20 @@
+# Local Docker full test-set scenario for the baseline LiteLLM agent under test.
+# Generate with:
+#   uv run python generate_compose.py --scenario scenarios/track_1_agent_under_test/local_docker_test_set.toml
+
+[evaluator]
+build = { context = ".", dockerfile = "src/evaluator/Dockerfile.evaluator" }
+env = { GEMINI_API_KEY = "${GEMINI_API_KEY:?Set GEMINI_API_KEY in .env}", LOGURU_LEVEL = "${LOGURU_LEVEL:-INFO}", CAR_BENCH_DATA_DIR = "/workspace/third_party/car-bench/car_bench/envs/car_voice_assistant/mock_data" }
+volumes = ["./third_party/car-bench:/workspace/third_party/car-bench:ro"]
+
+[agent_under_test]
+build = { context = ".", dockerfile = "src/track_1_agent_under_test/Dockerfile.track-1-agent-under-test" }
+env = { ANTHROPIC_API_KEY = "${ANTHROPIC_API_KEY:-}", OPENAI_API_KEY = "${OPENAI_API_KEY:-}", GEMINI_API_KEY = "${GEMINI_API_KEY:?Set GEMINI_API_KEY in .env}", AGENT_LLM = "${AGENT_LLM:-gemini/gemini-2.5-flash}", AGENT_TEMPERATURE = "${AGENT_TEMPERATURE:-0.0}", LOGURU_LEVEL = "${LOGURU_LEVEL:-INFO}" }
+
+[config]
+num_trials = 3
+task_split = "test"
+tasks_base_num_tasks = -1
+tasks_hallucination_num_tasks = -1
+tasks_disambiguation_num_tasks = -1
+max_steps = 50

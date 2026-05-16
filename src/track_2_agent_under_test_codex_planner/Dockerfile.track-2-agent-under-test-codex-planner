@@ -1,0 +1,46 @@
+FROM ghcr.io/astral-sh/uv:python3.12-trixie AS python-deps
+
+RUN adduser carbench
+USER carbench
+RUN mkdir -p /home/carbench/.cache/uv
+WORKDIR /home/carbench/app
+
+COPY --chown=carbench:carbench pyproject.toml uv.lock README.md ./
+COPY --chown=carbench:carbench third_party third_party
+
+RUN \
+    --mount=type=cache,target=/home/carbench/.cache/uv,uid=1000 \
+    uv sync --frozen --no-install-project --no-dev
+
+FROM node:22-bookworm-slim AS codex-cli
+ARG CODEX_NPM_PACKAGE="@openai/codex@0.130.0"
+RUN npm install -g --include=optional "${CODEX_NPM_PACKAGE}"
+
+FROM ghcr.io/astral-sh/uv:python3.12-trixie
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends bubblewrap \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=codex-cli /usr/local/bin/node /usr/local/bin/node
+COPY --from=codex-cli /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -sf /usr/local/lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex
+
+RUN adduser carbench
+USER carbench
+RUN mkdir -p /home/carbench/.cache/uv /home/carbench/.codex /home/carbench/codex-work
+WORKDIR /home/carbench/app
+
+COPY --from=python-deps --chown=carbench:carbench /home/carbench/app/.venv .venv
+COPY --chown=carbench:carbench src src
+
+ENV CODEX_HOME=/home/carbench/.codex
+ENV CODEX_WORKDIR=/home/carbench/codex-work
+ENV CODEX_APP_SERVER_CMD="codex app-server --listen stdio://"
+ENV CODEX_PLANNER_MODEL="gpt-5.5"
+ENV CODEX_EXECUTOR_MODEL="gpt-5.3-codex-spark"
+ENV PYTHONPATH=/home/carbench/app/src
+
+ENTRYPOINT [".venv/bin/python", "src/track_2_agent_under_test_codex_planner/server.py"]
+CMD ["--host", "0.0.0.0"]
+EXPOSE 8080

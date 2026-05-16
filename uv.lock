@@ -53,14 +53,11 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-car-bench-agent = [
+track-1-agent = [
     { name = "google-adk" },
     { name = "google-genai" },
     { name = "litellm" },
 ]
-car-bench-agent-codex = []
-car-bench-agent-codex-planner = []
-car-bench-agent-codex-python = []
 car-bench-evaluator = [
     { name = "car-bench" },
     { name = "nest-asyncio" },
@@ -76,17 +73,17 @@ dev = [
 requires-dist = [
     { name = "a2a-sdk", extras = ["http-server"], specifier = ">=1.0.0" },
     { name = "car-bench", marker = "extra == 'car-bench-evaluator'", directory = "third_party/car-bench" },
-    { name = "google-adk", marker = "extra == 'car-bench-agent'", specifier = ">=1.14.1" },
-    { name = "google-genai", marker = "extra == 'car-bench-agent'", specifier = ">=1.36.0" },
+    { name = "google-adk", marker = "extra == 'track-1-agent'", specifier = ">=1.14.1" },
+    { name = "google-genai", marker = "extra == 'track-1-agent'", specifier = ">=1.36.0" },
     { name = "httpx", specifier = ">=0.28.1" },
-    { name = "litellm", marker = "extra == 'car-bench-agent'", specifier = ">=1.0.0" },
+    { name = "litellm", marker = "extra == 'track-1-agent'", specifier = ">=1.0.0" },
     { name = "loguru", specifier = ">=0.7.0" },
     { name = "nest-asyncio", marker = "extra == 'car-bench-evaluator'", specifier = ">=1.6.0" },
     { name = "pydantic", specifier = ">=2.11.9" },
     { name = "python-dotenv", specifier = ">=1.1.1" },
     { name = "uvicorn", specifier = ">=0.35.0" },
 ]
-provides-extras = ["car-bench-agent", "car-bench-agent-codex", "car-bench-agent-codex-planner", "car-bench-agent-codex-python", "car-bench-evaluator"]
+provides-extras = ["car-bench-evaluator", "track-1-agent"]
 
 [package.metadata.requires-dev]
 dev = [

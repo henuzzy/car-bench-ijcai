@@ -5,11 +5,23 @@ evaluation. It applies to the baseline LiteLLM template, the Codex reference
 agents, and participant-owned agents. Every agent communicates with the
 CAR-bench evaluator through the same **A2A (Agent-to-Agent) protocol**.
 
+If you are just getting started, use the [main README](../README.md) first for
+competition overview, setup, validation modes, and submission shape. Then pick a
+starter package README:
+
+- [Track 1 minimal template](../src/track_1_agent_under_test/README.md)
+- [Track 2 direct Codex agent](../src/track_2_agent_under_test_codex/README.md)
+- [Track 2 planner/executor agent](../src/track_2_agent_under_test_codex_planner/README.md)
+- [Track 2 Python-call DSL agent](../src/track_2_agent_under_test_codex_python/README.md)
+
+This guide is the detailed reference for what your agent receives and what it
+must send on each A2A turn.
+
 > **Reference implementations:** The same wire contract is demonstrated by:
-> - [`src/agent_under_test/`](../src/agent_under_test/) — minimal LiteLLM-compatible template
-> - [`src/agent_under_test_codex/`](../src/agent_under_test_codex/) — Codex next-action JSON adapter
-> - [`src/agent_under_test_codex_planner/`](../src/agent_under_test_codex_planner/) — private planner plus Spark executor
-> - [`src/agent_under_test_codex_python/`](../src/agent_under_test_codex_python/) — Python-call DSL adapter
+> - [`src/track_1_agent_under_test/`](../src/track_1_agent_under_test/) — Track 1 minimal LiteLLM-compatible template
+> - [`src/track_2_agent_under_test_codex/`](../src/track_2_agent_under_test_codex/) — Track 2 Codex next-action JSON adapter
+> - [`src/track_2_agent_under_test_codex_planner/`](../src/track_2_agent_under_test_codex_planner/) — Track 2 private planner plus Spark executor
+> - [`src/track_2_agent_under_test_codex_python/`](../src/track_2_agent_under_test_codex_python/) — Track 2 Python-call DSL adapter
 >
 > For more sophisticated harnessing, see
 > [`agent-under-test-harnessing.md`](agent-under-test-harnessing.md) and
@@ -97,7 +109,7 @@ The first message in a conversation contains **two Parts**:
   ```
 
 See how the baseline agent parses this in
-[`src/agent_under_test/car_bench_agent.py`](../src/agent_under_test/car_bench_agent.py),
+[`src/track_1_agent_under_test/car_bench_agent.py`](../src/track_1_agent_under_test/car_bench_agent.py),
 inside the `execute()` method. The Codex agents reuse the same parsing contract
 before converting the transcript into their own internal prompt format.
 
@@ -203,7 +215,7 @@ You can call **multiple tools** in a single response by adding multiple `ToolCal
 Return both a text Part and a data Part. The text serves as a natural language explanation of what the agent is doing, while the data Part contains the actual tool calls.
 
 This is the most common pattern in the baseline agent; see
-[`src/agent_under_test/car_bench_agent.py`](../src/agent_under_test/car_bench_agent.py)
+[`src/track_1_agent_under_test/car_bench_agent.py`](../src/track_1_agent_under_test/car_bench_agent.py)
 for the concrete response-building code. The Codex agents intentionally return
 either a text response or tool-call data for each step, then let the evaluator
 drive the next turn.
@@ -272,8 +284,8 @@ class AgentExecutor:
 - `event_queue.enqueue_event(response)` — Send your response back
 - `new_message(parts=..., context_id=..., role=Role.ROLE_AGENT)` — Helper to build the response message
 
-See [`src/agent_under_test/car_bench_agent.py`](../src/agent_under_test/car_bench_agent.py)
-and [`src/agent_under_test_codex/car_bench_agent.py`](../src/agent_under_test_codex/car_bench_agent.py)
+See [`src/track_1_agent_under_test/car_bench_agent.py`](../src/track_1_agent_under_test/car_bench_agent.py)
+and [`src/track_2_agent_under_test_codex/car_bench_agent.py`](../src/track_2_agent_under_test_codex/car_bench_agent.py)
 for complete implementations of this executor contract.
 
 ---
@@ -330,10 +342,10 @@ The reference agents conform to this contract:
 
 | Agent | Message Parts | Metadata |
 |-------|---------------|----------|
-| `src/agent_under_test/` | text Part, data Part with `{"tool_calls": ...}`, optional `reasoning_content` | Aggregated LiteLLM usage on final no-tool-call responses |
-| `src/agent_under_test_codex/` | text Part for `respond`, data Part with `{"tool_calls": ...}` for actions | Codex latency/call count plus app-server token usage when emitted; cost remains zero |
-| `src/agent_under_test_codex_planner/` | Same as Codex JSON agent | Planner plus executor call counts, combined model label, and aggregated app-server token usage |
-| `src/agent_under_test_codex_python/` | Same as Codex JSON agent after parsing Python-call DSL | Same as Codex JSON agent |
+| `src/track_1_agent_under_test/` | text Part, data Part with `{"tool_calls": ...}`, optional `reasoning_content` | Aggregated LiteLLM usage on final no-tool-call responses |
+| `src/track_2_agent_under_test_codex/` | text Part for `respond`, data Part with `{"tool_calls": ...}` for actions | Codex latency/call count plus app-server token usage when emitted; cost remains zero |
+| `src/track_2_agent_under_test_codex_planner/` | Same as Codex JSON agent | Planner plus executor call counts, combined model label, and aggregated app-server token usage |
+| `src/track_2_agent_under_test_codex_python/` | Same as Codex JSON agent after parsing Python-call DSL | Same as Codex JSON agent |
 
 For shared constants, see [`src/turn_metrics.py`](../src/turn_metrics.py).
 
@@ -359,10 +371,10 @@ A2A 1.0: protobuf `Message` objects, protobuf `Part` oneofs, `SendMessage` /
 The server also accepts CLI arguments and environment variables for LLM
 configuration. The exact flags depend on the reference agent. For examples, see:
 
-- [`src/agent_under_test/server.py`](../src/agent_under_test/server.py)
-- [`src/agent_under_test_codex/server.py`](../src/agent_under_test_codex/server.py)
-- [`src/agent_under_test_codex_planner/server.py`](../src/agent_under_test_codex_planner/server.py)
-- [`src/agent_under_test_codex_python/server.py`](../src/agent_under_test_codex_python/server.py)
+- [`src/track_1_agent_under_test/server.py`](../src/track_1_agent_under_test/server.py)
+- [`src/track_2_agent_under_test_codex/server.py`](../src/track_2_agent_under_test_codex/server.py)
+- [`src/track_2_agent_under_test_codex_planner/server.py`](../src/track_2_agent_under_test_codex_planner/server.py)
+- [`src/track_2_agent_under_test_codex_python/server.py`](../src/track_2_agent_under_test_codex_python/server.py)
 
 ---
 
@@ -370,10 +382,10 @@ configuration. The exact flags depend on the reference agent. For examples, see:
 
 1. **Start your agent under test:**
    ```bash
-   python src/agent_under_test/server.py --host localhost --port 8080 --agent-llm "gemini/gemini-2.5-flash"
+   python src/track_1_agent_under_test/server.py --host localhost --port 8080 --agent-llm "gemini/gemini-2.5-flash"
    ```
 
-2. **Configure the scenario** (`scenarios/agent_under_test/local_smoke.toml`) so the
+2. **Configure the scenario** (`scenarios/track_1_agent_under_test/local_smoke.toml`) so the
    evaluator is started by the runner and points at your agent:
    ```toml
    [evaluator]
@@ -387,7 +399,7 @@ configuration. The exact flags depend on the reference agent. For examples, see:
 
 3. **Run evaluation** (in another terminal):
    ```bash
-   uv run car-bench-run scenarios/agent_under_test/local_smoke.toml --show-logs
+   uv run car-bench-run scenarios/track_1_agent_under_test/local_smoke.toml --show-logs
    ```
 
 4. **Check results** — The evaluator will report per-task pass/fail and overall metrics.

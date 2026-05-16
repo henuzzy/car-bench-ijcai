@@ -1,0 +1,19 @@
+# GHCR full test-set scenario for a published Codex Python-call DSL agent image.
+# Replace the agent_under_test image with your published image before running.
+
+[evaluator]
+image = "ghcr.io/car-bench/car-bench-evaluator:latest"
+env = { GEMINI_API_KEY = "${GEMINI_API_KEY:?Set GEMINI_API_KEY in .env}", LOGURU_LEVEL = "${LOGURU_LEVEL:-INFO}" }
+
+[agent_under_test]
+image = "ghcr.io/yourusername/car-bench-track-2-agent-under-test-codex-python:latest"
+env = { CODEX_MODEL = "${CODEX_MODEL:-gpt-5.3-codex-spark}", CODEX_REASONING_EFFORT = "${CODEX_REASONING_EFFORT:-medium}", CODEX_TIMEOUT_SECONDS = "${CODEX_TIMEOUT_SECONDS:-180}", CODEX_MALFORMED_RETRIES = "${CODEX_MALFORMED_RETRIES:-1}", LOGURU_LEVEL = "${LOGURU_LEVEL:-INFO}" }
+volumes = ["${CODEX_HOME_HOST:?Set CODEX_HOME_HOST in .env}:/home/carbench/.codex:rw"]
+
+[config]
+num_trials = 3
+task_split = "test"
+tasks_base_num_tasks = -1
+tasks_hallucination_num_tasks = -1
+tasks_disambiguation_num_tasks = -1
+max_steps = 50

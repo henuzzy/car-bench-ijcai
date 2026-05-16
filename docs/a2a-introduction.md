@@ -227,7 +227,7 @@ Every A2A server MUST publish an **Agent Card** — a JSON document describing t
 3. **Direct configuration:** Pre-configured URLs
 
 ### 📂 Our code:
-→ **`src/agent_under_test/server.py`** — `prepare_agent_card()` function creates our AgentCard
+→ **`src/track_1_agent_under_test/server.py`** — `prepare_agent_card()` function creates our AgentCard
 
 ---
 
@@ -272,7 +272,7 @@ parse them with `part.WhichOneof("content")`.
 
 ### 📂 Our code:
 → **`src/agentbeats/client.py`** — `create_message()`, `create_message_with_parts()`, `merge_parts()`
-→ **`src/agent_under_test/car_bench_agent.py`** — Building response Parts (text + data)
+→ **`src/track_1_agent_under_test/car_bench_agent.py`** — Building response Parts (text + data)
 → **`src/evaluator/car_bench_evaluator.py`** — Adds Artifacts with evaluation results
 
 ---
@@ -484,7 +484,7 @@ The spec treats agents as **standard enterprise applications**, relying on estab
            │ A2A (SendMessage, multi-turn via context_id)
            ▼
 ┌──────────────────────────────┐
-│     Agent Under Test (Server)    │  ← src/agent_under_test/
+│     Agent Under Test (Server)    │  ← src/track_1_agent_under_test/
 │   Agent Under Test           │
 │   [CARBenchAgentExecutor     │
 │    extends AgentExecutor]    │
@@ -495,8 +495,8 @@ The spec treats agents as **standard enterprise applications**, relying on estab
 
 | File | What to show | A2A Concepts |
 |------|-------------|--------------|
-| `src/agent_under_test/server.py` | `prepare_agent_card()`, server setup | Agent Card, Starlette route setup |
-| `src/agent_under_test/car_bench_agent.py` | `execute()` method — parsing Parts, building response | Messages, Parts (Text+Data), multi-turn |
+| `src/track_1_agent_under_test/server.py` | `prepare_agent_card()`, server setup | Agent Card, Starlette route setup |
+| `src/track_1_agent_under_test/car_bench_agent.py` | `execute()` method — parsing Parts, building response | Messages, Parts (Text+Data), multi-turn |
 | `src/agentbeats/client.py` | `send_message()`, `send_message_with_parts()` | Client → Server communication, SDK usage |
 | `src/agentbeats/sync_client.py` | `send_message_with_parts_sync()` | Raw JSON-RPC request construction |
 | `src/agentbeats/evaluator_executor.py` | `EvaluatorExecutor.execute()` | Task lifecycle, TaskUpdater |

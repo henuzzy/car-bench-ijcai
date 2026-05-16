@@ -1,0 +1,21 @@
+# Local Docker smoke scenario for the Codex planner/executor agent under test.
+# Generate with:
+#   uv run python generate_compose.py --scenario scenarios/track_2_agent_under_test_codex_planner/local_docker_smoke.toml
+
+[evaluator]
+build = { context = ".", dockerfile = "src/evaluator/Dockerfile.evaluator" }
+env = { GEMINI_API_KEY = "${GEMINI_API_KEY:?Set GEMINI_API_KEY in .env}", LOGURU_LEVEL = "${LOGURU_LEVEL:-INFO}", CAR_BENCH_DATA_DIR = "/workspace/third_party/car-bench/car_bench/envs/car_voice_assistant/mock_data" }
+volumes = ["./third_party/car-bench:/workspace/third_party/car-bench:ro"]
+
+[agent_under_test]
+build = { context = ".", dockerfile = "src/track_2_agent_under_test_codex_planner/Dockerfile.track-2-agent-under-test-codex-planner" }
+env = { CODEX_PLANNER_MODEL = "${CODEX_PLANNER_MODEL:-gpt-5.5}", CODEX_EXECUTOR_MODEL = "${CODEX_EXECUTOR_MODEL:-gpt-5.3-codex-spark}", CODEX_PLANNER_REASONING_EFFORT = "${CODEX_PLANNER_REASONING_EFFORT:-medium}", CODEX_EXECUTOR_REASONING_EFFORT = "${CODEX_EXECUTOR_REASONING_EFFORT:-medium}", CODEX_TIMEOUT_SECONDS = "${CODEX_TIMEOUT_SECONDS:-180}", CODEX_MALFORMED_RETRIES = "${CODEX_MALFORMED_RETRIES:-1}", LOGURU_LEVEL = "${LOGURU_LEVEL:-INFO}" }
+volumes = ["${CODEX_HOME_HOST:?Set CODEX_HOME_HOST in .env}:/home/carbench/.codex:rw"]
+
+[config]
+num_trials = 1
+task_split = "train"
+tasks_base_num_tasks = 1
+tasks_hallucination_num_tasks = 1
+tasks_disambiguation_num_tasks = 1
+max_steps = 50

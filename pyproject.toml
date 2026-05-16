@@ -18,14 +18,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-car-bench-agent = [
+track-1-agent = [
     "google-adk>=1.14.1",
     "google-genai>=1.36.0",
     "litellm>=1.0.0",
 ]
-car-bench-agent-codex = []
-car-bench-agent-codex-planner = []
-car-bench-agent-codex-python = []
 car-bench-evaluator = [
     "nest-asyncio>=1.6.0",
     "car-bench",

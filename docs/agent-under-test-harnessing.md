@@ -46,21 +46,22 @@ A robust agent-under-test harness usually has four layers:
 4. **A2A renderer**: Converts the model output into text/data Parts while
    attaching optional turn metrics.
 
-The Codex implementation in `src/agent_under_test_codex/` follows this
-shape and keeps Codex-specific app-server details behind `codex_client.py`.
-For Codex-specific model selection and multi-pass templates, see
+The Track 2 Codex Pro / Cerebras Spark implementation in
+`src/track_2_agent_under_test_codex/` follows this shape and keeps
+Codex-specific app-server details behind `codex_client.py`.
+For Track 2 model selection and multi-pass templates, see
 `docs/codex-harness-patterns.md`. A concrete planner/executor reference agent
-lives in `src/agent_under_test_codex_planner/`, and a Python-call DSL
-reference agent lives in `src/agent_under_test_codex_python/`.
+lives in `src/track_2_agent_under_test_codex_planner/`, and a Python-call DSL
+reference agent lives in `src/track_2_agent_under_test_codex_python/`.
 
 Reference packages:
 
 | Package | Purpose |
 |---------|---------|
-| `src/agent_under_test/` | Minimal LiteLLM-compatible template agent. |
-| `src/agent_under_test_codex/` | Codex app-server agent returning next-action JSON. |
-| `src/agent_under_test_codex_planner/` | Private planner plus Spark executor. |
-| `src/agent_under_test_codex_python/` | Python-call DSL parser inspired by programmatic tool calling. |
+| `src/track_1_agent_under_test/` | Minimal LiteLLM-compatible template agent. |
+| `src/track_2_agent_under_test_codex/` | Track 2 Codex app-server agent returning next-action JSON. |
+| `src/track_2_agent_under_test_codex_planner/` | Track 2 private planner plus Spark executor. |
+| `src/track_2_agent_under_test_codex_python/` | Track 2 Python-call DSL parser inspired by programmatic tool calling. |
 
 ## Important Design Rules
 
@@ -124,10 +125,18 @@ or:
 ```
 
 Each Codex step gets the full CAR-bench transcript and the task-filtered tool
-definitions. The app-server process stays warm, but each step uses an ephemeral
-Codex thread so the model-visible context is explicit and reproducible.
+definitions. The app-server process is initialized during Track 2 server
+startup and stays warm, but each step uses an ephemeral Codex thread so the
+model-visible context is explicit and reproducible.
 `arguments_json` is decoded by the adapter before returning normal A2A
 `{"tool_name": "...", "arguments": {...}}` payloads to the evaluator.
+
+The reference harness deliberately manages conversation state manually: the
+CAR-bench transcript is the source of truth, and Codex does not rely on hidden
+thread memory between benchmark-visible turns. This is slightly more verbose,
+but it makes retries, hallucination scoring, and trajectory inspection much
+easier to reason about. Keep static prompt content first and dynamic transcript
+content last so provider prompt caching has a stable prefix to reuse.
 
 This Codex harness intentionally does not expose Codex's normal coding-agent
 affordances to the benchmark turn. Dynamic tools, shell commands, file changes,

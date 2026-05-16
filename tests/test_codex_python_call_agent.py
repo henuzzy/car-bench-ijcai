@@ -1,8 +1,8 @@
 import json
 import unittest
 
-from agent_under_test_codex.codex_client import CodexMalformedResponseError
-from agent_under_test_codex_python.python_call_agent import (
+from track_2_agent_under_test_codex.codex_client import CodexMalformedResponseError
+from track_2_agent_under_test_codex_python.python_call_agent import (
     extract_python_call_code,
     parse_python_calls,
     parse_python_next_action_output,

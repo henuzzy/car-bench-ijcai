@@ -1,16 +1,18 @@
-# Codex Model And Harness Patterns
+# Track 2 Codex Pro / Cerebras Spark Harness Patterns
 
-The Codex agent under test is intentionally a small next-action adapter. It is a
-good starting point for participants, but it does not require every participant
-to use the exact same internal inference strategy.
+Track 2 agents use Codex Pro-backed inference, with `gpt-5.3-codex-spark` as
+the practical fast executor served on Cerebras infrastructure. The reference
+Codex agent under test is intentionally a small next-action adapter, but Track 2
+participants can replace the internal harness as long as the submitted A2A
+agent stays within the official time budget.
 
 ## Reference Agent Map
 
 | Agent | Package | Local Scenario | Internal Strategy |
 |-------|---------|----------------|-------------------|
-| Codex JSON agent | [`src/agent_under_test_codex/`](../src/agent_under_test_codex/) | [`scenarios/agent_under_test_codex/local_smoke.toml`](../scenarios/agent_under_test_codex/local_smoke.toml) | Spark returns schema-constrained next-action JSON. |
-| Codex planner/executor | [`src/agent_under_test_codex_planner/`](../src/agent_under_test_codex_planner/) | [`scenarios/agent_under_test_codex_planner/local_smoke.toml`](../scenarios/agent_under_test_codex_planner/local_smoke.toml) | Larger planner runs once after a user message; Spark executor reuses the private plan across tool-result turns. |
-| Codex Python-call DSL | [`src/agent_under_test_codex_python/`](../src/agent_under_test_codex_python/) | [`scenarios/agent_under_test_codex_python/local_smoke.toml`](../scenarios/agent_under_test_codex_python/local_smoke.toml) | Spark emits a fenced Python-call action block that is parsed, never executed. |
+| Codex JSON agent | [`src/track_2_agent_under_test_codex/`](../src/track_2_agent_under_test_codex/) | [`scenarios/track_2_agent_under_test_codex/local_smoke.toml`](../scenarios/track_2_agent_under_test_codex/local_smoke.toml) | Spark returns schema-constrained next-action JSON. |
+| Codex planner/executor | [`src/track_2_agent_under_test_codex_planner/`](../src/track_2_agent_under_test_codex_planner/) | [`scenarios/track_2_agent_under_test_codex_planner/local_smoke.toml`](../scenarios/track_2_agent_under_test_codex_planner/local_smoke.toml) | Larger planner runs once after a user message; Spark executor reuses the private plan across tool-result turns. |
+| Codex Python-call DSL | [`src/track_2_agent_under_test_codex_python/`](../src/track_2_agent_under_test_codex_python/) | [`scenarios/track_2_agent_under_test_codex_python/local_smoke.toml`](../scenarios/track_2_agent_under_test_codex_python/local_smoke.toml) | Spark emits a fenced Python-call action block that is parsed, never executed. |
 
 ## Model Selection
 
@@ -21,18 +23,19 @@ CODEX_MODEL=gpt-5.3-codex-spark
 CODEX_REASONING_EFFORT=medium
 ```
 
-`gpt-5.3-codex-spark` is the recommended practical default because the benchmark
-has a time budget and Spark is substantially faster. It is not the only allowed
-model. Participants can use a larger model for selected internal steps if the
-total harness still fits the time budget.
+`gpt-5.3-codex-spark` is the recommended practical default because Track 2 has
+a time budget and Spark is substantially faster. It is not the only Codex model
+that can appear inside a harness. Participants can use larger Codex models for
+selected planner, verifier, or condenser steps if the total agent still fits the
+official time budget, which will be announced before official evaluation.
 
 Ways to change the model:
 
 - Local run: edit `CODEX_MODEL` in `.env`.
-- Docker local build: edit `CODEX_MODEL` in `.env`; `scenarios/agent_under_test_codex/local_docker_smoke.toml`
+- Docker local build: edit `CODEX_MODEL` in `.env`; `scenarios/track_2_agent_under_test_codex/local_docker_smoke.toml`
   forwards it into the container.
 - Scenario-specific local run: add `--model <model-id>` to the participant
-  command in `scenarios/agent_under_test_codex/local_smoke.toml`.
+  command in `scenarios/track_2_agent_under_test_codex/local_smoke.toml`.
 - Code-level advanced harness: pass `model=` to `CodexAppServerClient.generate`
   for individual internal calls.
 
@@ -49,7 +52,7 @@ The reference agent is deliberately conservative:
 - It does not opt in to the app-server experimental API surface.
 - It uses only a small stable subset: initialize, `thread/start`, `turn/start`,
   item notifications, and `turn/completed`.
-- It keeps protocol handling behind `src/agent_under_test_codex/codex_client.py`.
+- It keeps protocol handling behind `src/track_2_agent_under_test_codex/codex_client.py`.
 - Docker builds pin `@openai/codex@0.130.0` by default.
 - `CODEX_APP_SERVER_CMD` lets participants point at a specific local Codex
   binary if they need to reproduce an exact run.
@@ -83,6 +86,32 @@ A2A input from the evaluator
 This is the lowest-latency and easiest-to-debug pattern. It is the best first
 target before trying multi-pass harnesses.
 
+### Conversation State And Prompt Caching
+
+The reference agents keep the Codex app-server process warm, but they do not
+reuse a hidden Codex thread as benchmark conversation memory. Each Codex turn is
+an ephemeral app-server thread that receives the complete CAR-bench transcript
+and task-filtered tools. This follows the OpenAI Responses API pattern of
+manual conversation-state management: model requests are stateless unless you
+send prior messages or use an explicit conversation/previous-response handle.
+
+For CAR-bench, manual state is the safer default because the evaluator
+trajectory is the source of truth. It keeps malformed-output retries, tool
+observations, and hallucination scoring visible in the prompt rather than split
+between A2A history and hidden model-side state. Participants may experiment
+with persistent thread state, but should verify that it does not duplicate
+messages, hide observations, or make trajectories harder to reproduce.
+
+The prompt layout is cache-friendly: stable task rules, tool definitions, and
+schemas appear before the dynamic conversation transcript. OpenAI prompt
+caching works on matching prompt prefixes, so keeping static content first can
+reduce latency without giving up explicit CAR-bench state.
+
+References:
+
+- [OpenAI conversation state guide](https://platform.openai.com/docs/guides/conversation-state?api-mode=responses)
+- [OpenAI prompt caching guide](https://platform.openai.com/docs/guides/prompt-caching)
+
 ## Pattern 2: Planner Plus Spark Executor
 
 Use a larger model only to write a compact plan, then let Spark produce the final
@@ -108,7 +137,7 @@ reasoning and CAR-bench exposes `planning_tool`, it can still return
 `planning_tool` as a normal benchmark-visible tool call.
 
 This repository includes a working reference implementation in
-`src/agent_under_test_codex_planner/`. It uses a private
+`src/track_2_agent_under_test_codex_planner/`. It uses a private
 `planning_tool`-shaped JSON object because CAR-bench already defines a
 `planning_tool` for multi-step reasoning. The reference implementation does not
 send that private plan to the evaluator for execution. Participants may replace this
@@ -118,7 +147,7 @@ primitive as long as it only uses benchmark-visible inputs.
 Run it locally with:
 
 ```bash
-uv run car-bench-run scenarios/agent_under_test_codex_planner/local_smoke.toml --show-logs
+uv run car-bench-run scenarios/track_2_agent_under_test_codex_planner/local_smoke.toml --show-logs
 ```
 
 ```python
@@ -279,7 +308,7 @@ likely.
 
 ## Pattern 5: Python-Call DSL
 
-The Python-call reference agent in `src/agent_under_test_codex_python/`
+The Python-call reference agent in `src/track_2_agent_under_test_codex_python/`
 lets Spark answer in a more Codex-native chat style: optional brief private
 text plus exactly one fenced Python action block:
 
@@ -318,7 +347,7 @@ code block is closer to how Codex naturally proposes small pieces of code.
 Run it locally with:
 
 ```bash
-uv run car-bench-run scenarios/agent_under_test_codex_python/local_smoke.toml --show-logs
+uv run car-bench-run scenarios/track_2_agent_under_test_codex_python/local_smoke.toml --show-logs
 ```
 
 Accepted examples:
