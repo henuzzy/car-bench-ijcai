@@ -20,3 +20,8 @@ docker-compose.yml
 a2a-scenario.toml
 scenarios/**/docker-compose.yml
 scenarios/**/a2a-scenario.toml
+
+# Local CAR-bench assets and reference documents
+car-bench-dataset/
+*.pdf
+任务说明.md

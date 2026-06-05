@@ -104,6 +104,14 @@ def parse_toml(scenario_path: str) -> dict:
     }
 
 
+def resolve_cmd_args(cmd: str) -> list[str]:
+    """Parse a scenario command and keep Python subprocesses in this environment."""
+    cmd_args = shlex.split(cmd or "")
+    if cmd_args and cmd_args[0].lower() in {"python", "python3", "python.exe"}:
+        cmd_args[0] = sys.executable
+    return cmd_args
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run agent scenario")
     parser.add_argument("scenario", help="Path to scenario TOML file")
@@ -136,7 +144,7 @@ def main():
         # Start the agent under test (skip if --evaluate-only).
         if not args.evaluate_only:
             aut = cfg["agent_under_test"]
-            cmd_args = shlex.split(aut.get("cmd", ""))
+            cmd_args = resolve_cmd_args(aut.get("cmd", ""))
             if cmd_args:
                 logger.info(
                     "Starting agent under test",
@@ -153,7 +161,7 @@ def main():
 
         # Start the evaluator (skip if --evaluate-only).
         if not args.evaluate_only:
-            evaluator_cmd_args = shlex.split(cfg["evaluator"].get("cmd", ""))
+            evaluator_cmd_args = resolve_cmd_args(cfg["evaluator"].get("cmd", ""))
             if evaluator_cmd_args:
                 logger.info(
                     "Starting evaluator",
