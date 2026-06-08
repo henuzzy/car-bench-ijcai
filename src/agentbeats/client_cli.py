@@ -2,6 +2,7 @@ import argparse
 import sys
 import json
 import asyncio
+import os
 import re
 import shlex
 import time
@@ -25,6 +26,9 @@ from google.protobuf.json_format import MessageToDict
 
 from agentbeats.client import create_message
 from agentbeats.models import EvalRequest
+
+
+DEFAULT_CLIENT_TIMEOUT = float(os.getenv("AGENTBEATS_CLIENT_TIMEOUT_SECONDS", "21600"))
 
 
 class AgentFailedError(Exception):
@@ -83,6 +87,18 @@ def print_parts(parts, task_state: str | None = None):
         output.extend(json.dumps(item, indent=2) for item in data_parts)
 
     print("\n".join(output) + "\n")
+
+
+def print_progress_parts(parts, last_progress: dict[str, str]) -> None:
+    """Print progress status updates without enabling verbose event dumps."""
+    text_parts, _ = parse_parts(parts)
+    for text in text_parts:
+        if not text.startswith("[Progress]"):
+            continue
+        if text == last_progress.get("value"):
+            continue
+        last_progress["value"] = text
+        print(text, flush=True)
 
 
 def _parse_artifact(artifact) -> dict[str, Any]:
@@ -456,9 +472,10 @@ async def main():
 
     # Collect artifacts from streaming events
     artifact_records = []
+    last_progress = {"value": ""}
 
     # Send message via streaming
-    async with httpx.AsyncClient(timeout=300) as httpx_client:
+    async with httpx.AsyncClient(timeout=DEFAULT_CLIENT_TIMEOUT) as httpx_client:
         resolver = A2ACardResolver(httpx_client=httpx_client, base_url=evaluator_url)
         agent_card = await resolver.get_agent_card()
         config = ClientConfig(
@@ -484,6 +501,7 @@ async def main():
                     task = event.task
                     state_name = _STATE_NAMES.get(task.status.state, "unknown")
                     parts = task.status.message.parts if task.status.message.parts else []
+                    print_progress_parts(parts, last_progress)
                     if args.verbose:
                         print_parts(parts, state_name)
                     if task.status.state == TaskState.TASK_STATE_COMPLETED:
@@ -498,6 +516,7 @@ async def main():
                     update = event.status_update
                     state_name = _STATE_NAMES.get(update.status.state, "unknown")
                     parts = update.status.message.parts if update.status.message.parts else []
+                    print_progress_parts(parts, last_progress)
                     if args.verbose:
                         print_parts(parts, state_name)
                     if update.status.state == TaskState.TASK_STATE_COMPLETED:

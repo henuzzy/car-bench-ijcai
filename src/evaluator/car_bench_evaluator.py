@@ -10,6 +10,7 @@ This agent:
 """
 import argparse
 import asyncio
+import functools
 import json
 import os
 import re
@@ -43,7 +44,10 @@ from turn_metrics import (
     TURN_METRICS_KEY, SOURCE_KEY, SOURCE_USER, SOURCE_ENVIRONMENT,
     extract_turn_metrics, AVG_LLM_CALL_TIME_MS, NUM_LLM_CALLS, COST,
 )
-from car_bench_paths import CAR_BENCH_REPO
+try:
+    from car_bench_paths import CAR_BENCH_REPO
+except ImportError:
+    from .car_bench_paths import CAR_BENCH_REPO
 sys.path.pop(0)
 
 # Import run.py from car-bench repo root
@@ -58,6 +62,82 @@ nest_asyncio.apply()
 logger = configure_logger(role="evaluator", context="-")
 
 RESPOND_ACTION_NAME = "respond"
+
+
+def _progress_bar(completed: int, total: int, width: int = 20) -> str:
+    if total <= 0:
+        return "[" + "." * width + "]"
+    completed = max(0, min(completed, total))
+    filled = width if completed >= total else int(width * completed / total)
+    return "[" + "#" * filled + "." * (width - filled) + "]"
+
+
+def format_progress_update(progress: Dict[str, Any]) -> str:
+    """Format benchmark progress for the CLI status stream."""
+    event = str(progress.get("event") or "progress")
+    task_type = str(progress.get("task_type") or "task")
+    task_split = str(progress.get("task_split") or "split")
+    total_tasks = int(progress.get("total_tasks") or 0)
+    total_trials = int(progress.get("total_trials") or 0)
+    total_runs = int(progress.get("total_runs") or 0)
+    completed_runs = int(progress.get("completed_runs") or 0)
+    remaining_runs = int(progress.get("remaining_runs") or max(total_runs - completed_runs, 0))
+
+    label_by_event = {
+        "split_start": "start",
+        "trial_start": "trial start",
+        "task_start": "task start",
+        "task_done": "task done",
+        "trial_done": "trial done",
+        "split_done": "done",
+    }
+    label = label_by_event.get(event, event.replace("_", " "))
+
+    if event in {"split_start", "trial_start"}:
+        details = [label]
+        if total_tasks and total_trials:
+            details.append(f"{total_tasks} tasks x {total_trials} trials")
+        trial_number = progress.get("trial_number")
+        if trial_number and total_trials:
+            details.append(f"trial {trial_number}/{total_trials}")
+        return f"[Progress] {task_type}/{task_split} | " + ", ".join(details)
+
+    if event == "task_start" and total_runs:
+        current_run = min(completed_runs + 1, total_runs)
+        header = (
+            f"[Progress] {task_type}/{task_split} "
+            f"{_progress_bar(completed_runs, total_runs)} "
+            f"running task-run {current_run}/{total_runs}, "
+            f"{completed_runs} completed, {remaining_runs} remaining"
+        )
+    else:
+        header = (
+            f"[Progress] {task_type}/{task_split} "
+            f"{_progress_bar(completed_runs, total_runs)} "
+            f"{completed_runs}/{total_runs} task-runs completed, {remaining_runs} remaining"
+        )
+
+    task_id = progress.get("task_id")
+    task_position = progress.get("task_position")
+    trial_number = progress.get("trial_number")
+    details = [label]
+    if task_id:
+        if task_position and total_tasks:
+            task_label = f"task {task_position}/{total_tasks} {task_id}"
+        else:
+            task_label = f"task {task_id}"
+        details.append(task_label)
+    elif total_tasks and total_trials:
+        details.append(f"{total_tasks} tasks x {total_trials} trials")
+    if trial_number and total_trials:
+        details.append(f"trial {trial_number}/{total_trials}")
+    if "reward" in progress:
+        try:
+            details.append(f"reward {float(progress['reward']):.2f}")
+        except (TypeError, ValueError):
+            details.append(f"reward {progress['reward']}")
+
+    return header + " | " + ", ".join(details)
 
 
 def create_remote_agent_factory(agent_url: str):
@@ -318,7 +398,10 @@ def create_remote_agent_factory(agent_url: str):
 
 def calculate_evaluation_results(
     results_by_split: Dict[str, List[EnvRunResult]],
-    time_used: float
+    time_used: float,
+    *,
+    include_detailed_results: bool = False,
+    include_trajectories: bool = False,
 ) -> Tuple[Dict[str, Any], str]:
     """Calculate comprehensive evaluation results and format summary.
 
@@ -390,33 +473,53 @@ def calculate_evaluation_results(
         pass_at_k_scores_by_split,
         max_trials
     )
+    weighted_pass_power_k_scores, weighted_pass_at_k_scores = calculate_weighted_metrics(
+        all_results,
+        max_trials,
+        organize_data_by_task_and_trial,
+        calculate_pass_power_k_scores,
+        calculate_pass_at_k_scores,
+    )
+    pass_summary = build_pass_summary(
+        pass_power_k_scores=pass_power_k_scores,
+        pass_power_k_scores_by_split=pass_power_k_scores_by_split,
+    )
+    weighted_pass_summary = build_pass_summary(
+        pass_power_k_scores=weighted_pass_power_k_scores,
+        pass_power_k_scores_by_split=pass_power_k_scores_by_split,
+    )
+    task_pass3_summary = build_task_pass3_summary(results_by_split)
 
-    # Prepare detailed results with reward_info, task info, and trajectories - split by task type
-    detailed_results_by_split = {}
+    # Keep A2A artifacts compact by default. Full trajectories remain in the
+    # checkpoint files and can be enabled for smaller debugging runs.
+    results_by_split_compact = {}
 
     for split, results in results_by_split.items():
         if not results:
             continue
 
-        detailed_results_by_split[split] = [
-            {
+        split_records = []
+        for result in results:
+            record = {
                 "task_id": result.task_id,
                 "reward": result.reward,
                 "trial": result.trial,
                 "reward_info": result.info.get("reward_info", {}),
-                "task": result.info.get("task", {}),
-                "trajectory": [
-                    msg for msg in result.traj
-                    if msg.get("role") != "system"
-                ],
                 "error": result.info.get("error", None),
                 "traceback": result.info.get("traceback", None),
                 "user_cost": result.info.get("user_cost", 0),
                 "total_agent_cost": result.info.get("total_agent_cost", 0),
                 "total_llm_latency_ms": result.info.get("total_llm_induced_latency_ms", 0),
             }
-            for result in results
-        ]
+            if include_detailed_results:
+                record["task"] = result.info.get("task", {})
+            if include_trajectories:
+                record["trajectory"] = [
+                    msg for msg in result.traj
+                    if msg.get("role") != "system"
+                ]
+            split_records.append(record)
+        results_by_split_compact[split] = split_records
 
     # Format task results for display by split
     task_results_by_split_str = []
@@ -445,6 +548,14 @@ def calculate_evaluation_results(
 
     # Build result data
     result_data = {
+        "summary": {
+            "pass_rate": pass_rate,
+            "score": total_reward,
+            "max_score": num_completed,
+            "pass_summary": pass_summary,
+            "weighted_pass_summary": weighted_pass_summary,
+            "task_pass3_summary": task_pass3_summary,
+        },
         "score": total_reward,
         "max_score": num_completed,
         "pass_rate": pass_rate,
@@ -452,11 +563,18 @@ def calculate_evaluation_results(
         "time_used": time_used,
         "pass_power_k_scores": pass_power_k_scores,
         "pass_at_k_scores": pass_at_k_scores,
+        "weighted_pass_power_k_scores": weighted_pass_power_k_scores,
+        "weighted_pass_at_k_scores": weighted_pass_at_k_scores,
         "pass_power_k_scores_by_split": pass_power_k_scores_by_split,
         "pass_at_k_scores_by_split": pass_at_k_scores_by_split,
+        "pass_summary": pass_summary,
+        "weighted_pass_summary": weighted_pass_summary,
+        "task_pass3_summary": task_pass3_summary,
         "max_trials": max_trials,
-        "detailed_results_by_split": detailed_results_by_split,
+        "results_by_split": results_by_split_compact,
     }
+
+    task_pass3_display = format_task_pass3_summary(task_pass3_summary)
 
     # Build summary string
     summary = f"""CAR-bench Results
@@ -464,13 +582,194 @@ Tasks: {num_completed}
 Overall Pass Rate: {pass_rate:.1f}% ({total_reward:.1f}/{num_completed})
 Time: {time_used:.1f}s
 
-Pass Scores:
-{pass_scores_display}
+Task-level Pass^3:
+{task_pass3_display}
 
-Task Results by Split:
-{task_results_str}"""
+Pass Scores:
+{pass_scores_display}"""
 
     return result_data, summary
+
+
+def build_task_pass3_summary(
+    results_by_split: Dict[str, List[EnvRunResult]],
+) -> Dict[str, Any]:
+    """Build strict per-task and total Pass^3 details."""
+
+    task_records: dict[str, dict[str, Any]] = {}
+    for split, results in results_by_split.items():
+        for result in results:
+            task_id = str(result.task_id or result.task_index)
+            record = task_records.setdefault(
+                task_id,
+                {
+                    "task_id": task_id,
+                    "split": split,
+                    "trials": {},
+                    "pass^3": None,
+                    "num_trials": 0,
+                },
+            )
+            record["trials"][str(result.trial)] = result.reward
+
+    by_split: dict[str, dict[str, Any]] = {}
+    passed_tasks = 0
+    eligible_tasks = 0
+    incomplete_tasks = 0
+
+    for record in task_records.values():
+        trials = record["trials"]
+        required_keys = ["0", "1", "2"]
+        has_three = all(key in trials for key in required_keys)
+        record["num_trials"] = len(trials)
+        if has_three:
+            eligible_tasks += 1
+            passed = all(_is_full_reward(trials[key]) for key in required_keys)
+            record["pass^3"] = passed
+            if passed:
+                passed_tasks += 1
+        else:
+            incomplete_tasks += 1
+            record["pass^3"] = None
+
+        split = record["split"]
+        split_summary = by_split.setdefault(
+            split,
+            {
+                "total_tasks": 0,
+                "eligible_tasks": 0,
+                "passed_tasks": 0,
+                "incomplete_tasks": 0,
+                "pass^3": None,
+            },
+        )
+        split_summary["total_tasks"] += 1
+        if record["pass^3"] is None:
+            split_summary["incomplete_tasks"] += 1
+        else:
+            split_summary["eligible_tasks"] += 1
+            if record["pass^3"]:
+                split_summary["passed_tasks"] += 1
+
+    for split_summary in by_split.values():
+        eligible = split_summary["eligible_tasks"]
+        split_summary["pass^3"] = (
+            split_summary["passed_tasks"] / eligible
+            if eligible else None
+        )
+
+    return {
+        "overall": {
+            "total_tasks": len(task_records),
+            "eligible_tasks": eligible_tasks,
+            "passed_tasks": passed_tasks,
+            "incomplete_tasks": incomplete_tasks,
+            "pass^3": passed_tasks / eligible_tasks if eligible_tasks else None,
+        },
+        "by_split": by_split,
+        "by_task": {
+            task_id: task_records[task_id]
+            for task_id in sorted(task_records)
+        },
+    }
+
+
+def format_task_pass3_summary(summary: Dict[str, Any]) -> str:
+    """Format strict Pass^3 as total plus compact per-task status."""
+
+    overall = summary.get("overall", {})
+    lines = [
+        "  Overall: "
+        f"{overall.get('passed_tasks', 0)}/{overall.get('eligible_tasks', 0)} "
+        f"tasks passed, Pass^3 {_format_score(overall.get('pass^3'))}"
+    ]
+    incomplete = overall.get("incomplete_tasks", 0)
+    if incomplete:
+        lines[0] += f", incomplete {incomplete}"
+
+    for split in ["base", "hallucination", "disambiguation"]:
+        split_summary = summary.get("by_split", {}).get(split)
+        if not split_summary:
+            continue
+        lines.append(
+            f"  {split.capitalize()}: "
+            f"{split_summary.get('passed_tasks', 0)}/{split_summary.get('eligible_tasks', 0)} "
+            f"tasks passed, Pass^3 {_format_score(split_summary.get('pass^3'))}"
+        )
+
+    task_parts = []
+    for task_id, record in summary.get("by_task", {}).items():
+        value = record.get("pass^3")
+        if value is True:
+            status = "PASS"
+        elif value is False:
+            status = "FAIL"
+        else:
+            status = "INCOMPLETE"
+        task_parts.append(f"{task_id}:{status}")
+
+    if task_parts:
+        lines.append("  Tasks: " + ", ".join(task_parts))
+    return "\n".join(lines)
+
+
+def _is_full_reward(value: Any) -> bool:
+    try:
+        return abs(float(value) - 1.0) <= 1e-6
+    except (TypeError, ValueError):
+        return False
+
+
+def build_pass_summary(
+    *,
+    pass_power_k_scores: Dict[str, float],
+    pass_power_k_scores_by_split: Dict[str, Dict[str, float]],
+) -> Dict[str, Any]:
+    """Build explicit Pass^1/Pass^3 summary for JSON artifacts."""
+
+    return {
+        "overall": {
+            "pass^1": _score_or_none(pass_power_k_scores, "Pass^1"),
+            "pass^3": _score_or_none(pass_power_k_scores, "Pass^3"),
+        },
+        "by_split": {
+            split: {
+                "pass^1": _score_or_none(scores, "Pass^1"),
+                "pass^3": _score_or_none(scores, "Pass^3"),
+            }
+            for split, scores in pass_power_k_scores_by_split.items()
+        },
+    }
+
+
+def format_pass_summary(pass_summary: Dict[str, Any]) -> str:
+    """Format overall and per-split Pass^1/Pass^3 metrics for display."""
+
+    lines = [
+        "  Overall: "
+        f"Pass^1 {_format_score(pass_summary['overall'].get('pass^1'))}, "
+        f"Pass^3 {_format_score(pass_summary['overall'].get('pass^3'))}"
+    ]
+    for split in ["base", "hallucination", "disambiguation"]:
+        split_scores = pass_summary.get("by_split", {}).get(split)
+        if not split_scores:
+            continue
+        lines.append(
+            f"  {split.capitalize()}: "
+            f"Pass^1 {_format_score(split_scores.get('pass^1'))}, "
+            f"Pass^3 {_format_score(split_scores.get('pass^3'))}"
+        )
+    return "\n".join(lines)
+
+
+def _score_or_none(scores: Dict[str, float], key: str) -> Optional[float]:
+    return scores[key] if key in scores else None
+
+
+def _format_score(score: Optional[float]) -> str:
+    if score is None:
+        return "N/A"
+    return f"{score * 100:.1f}%"
 
 
 def calculate_average_metrics_across_splits(
@@ -513,6 +812,39 @@ def calculate_average_metrics_across_splits(
     return pass_power_k_scores, pass_at_k_scores
 
 
+def calculate_weighted_metrics(
+    all_results: List[EnvRunResult],
+    max_trials: int,
+    organize_data_by_task_and_trial,
+    calculate_pass_power_k_scores,
+    calculate_pass_at_k_scores,
+) -> Tuple[Dict[str, float], Dict[str, float]]:
+    """Calculate total Pass^k/Pass@k over all task IDs as one weighted pool."""
+
+    if not all_results:
+        return {}, {}
+
+    analysis_data = [
+        {
+            "task_id": result.task_id or str(result.task_index),
+            "reward": result.reward,
+            "info": result.info,
+            "trial": result.trial,
+        }
+        for result in all_results
+    ]
+    organized_data = organize_data_by_task_and_trial(analysis_data)
+    weighted_max_trials = (
+        max(len(trials) for trials in organized_data.values())
+        if organized_data else max_trials
+    )
+    metric_trials = max(max_trials, weighted_max_trials)
+    return (
+        calculate_pass_power_k_scores(organized_data, metric_trials),
+        calculate_pass_at_k_scores(organized_data, metric_trials),
+    )
+
+
 def build_args_from_config(config: dict, task_type: str) -> argparse.Namespace:
     """Convert evaluation config to run() arguments for a specific task type."""
     return argparse.Namespace(
@@ -522,6 +854,7 @@ def build_args_from_config(config: dict, task_type: str) -> argparse.Namespace:
         num_tasks=config.get(f"tasks_{task_type}_num_tasks", -1),
         task_id_filter=config.get(f"tasks_{task_type}_task_id_filter", None),
         num_trials=config.get("num_trials", 1),
+        max_steps=config.get("max_steps", 40),
         max_concurrency=1,  # Sequential to avoid overloading agent under test
         # User simulator settings
         user_strategy="llm",
@@ -643,14 +976,36 @@ class CARBenchEvaluator(EvaluatorAgent):
                     os.remove(ckpt_path)
                     eval_logger.debug("Removed existing checkpoint file", path=ckpt_path)
 
-                # Run in executor to avoid blocking async event loop
+                # Run in executor to avoid blocking async event loop.
+                # Progress callbacks are emitted from the benchmark worker
+                # thread, then scheduled back onto the A2A event loop.
                 loop = asyncio.get_event_loop()
-                results = await loop.run_in_executor(
-                    None,
+                last_progress_text: Dict[str, str] = {"value": ""}
+
+                def progress_callback(progress: Dict[str, Any]) -> None:
+                    progress_text = format_progress_update(progress)
+                    if progress_text == last_progress_text["value"]:
+                        return
+                    last_progress_text["value"] = progress_text
+                    split_logger.info("Benchmark progress", progress=progress_text)
+                    asyncio.run_coroutine_threadsafe(
+                        updater.update_status(
+                            TaskState.TASK_STATE_WORKING,
+                            new_text_message(progress_text),
+                        ),
+                        loop,
+                    )
+
+                benchmark_call = functools.partial(
                     run_benchmark,
                     args,
                     ckpt_path,
-                    agent_factory
+                    agent_factory,
+                    progress_callback,
+                )
+                results = await loop.run_in_executor(
+                    None,
+                    benchmark_call,
                 )
 
                 all_results.extend(results)
@@ -695,8 +1050,6 @@ class CARBenchEvaluator(EvaluatorAgent):
 
         except Exception as e:
             logger.error(f"Evaluation failed: {e}", exc_info=True)
-            await updater.update_status(
-                TaskState.TASK_STATE_FAILED,
-                new_text_message(f"Evaluation failed: {e}")
-            )
+            # Let EvaluatorExecutor publish the terminal FAILED state. Marking
+            # it here as well makes a2a-sdk reject the outer failure update.
             raise

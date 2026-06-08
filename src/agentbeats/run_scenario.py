@@ -112,6 +112,27 @@ def resolve_cmd_args(cmd: str) -> list[str]:
     return cmd_args
 
 
+def terminate_process_tree(proc: subprocess.Popen, sig: signal.Signals) -> None:
+    """Terminate a spawned service process and its children on Windows or POSIX."""
+
+    if proc.poll() is not None:
+        return
+
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        return
+
+    try:
+        os.killpg(proc.pid, sig)
+    except ProcessLookupError:
+        pass
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run agent scenario")
     parser.add_argument("scenario", help="Path to scenario TOML file")
@@ -138,6 +159,8 @@ def main():
     parent_bin = str(Path(sys.executable).parent)
     base_env = os.environ.copy()
     base_env["PATH"] = parent_bin + os.pathsep + base_env.get("PATH", "")
+    base_env.setdefault("PYTHONUTF8", "1")
+    base_env.setdefault("PYTHONIOENCODING", "utf-8")
 
     procs = []
     try:
@@ -208,18 +231,10 @@ def main():
     finally:
         logger.info("Shutting down agents")
         for p in procs:
-            if p.poll() is None:
-                try:
-                    os.killpg(p.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
+            terminate_process_tree(p, signal.SIGTERM)
         time.sleep(1)
         for p in procs:
-            if p.poll() is None:
-                try:
-                    os.killpg(p.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+            terminate_process_tree(p, getattr(signal, "SIGKILL", signal.SIGTERM))
 
 
 if __name__ == "__main__":

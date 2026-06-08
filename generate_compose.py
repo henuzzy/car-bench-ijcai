@@ -136,13 +136,13 @@ def parse_scenario(scenario_path: Path) -> dict[str, Any]:
 
 
 def _relative_to_output_dir(path: Path, output_dir: Path) -> str:
-    return os.path.relpath(path.resolve(), output_dir.resolve())
+    return Path(os.path.relpath(path.resolve(), output_dir.resolve())).as_posix()
 
 
 def _relative_repo_path(path_value: str, output_dir: Path) -> str:
     path = Path(path_value)
     if path.is_absolute():
-        return str(path)
+        return path.as_posix()
     return _relative_to_output_dir(PROJECT_ROOT / path, output_dir)
 
 
@@ -226,7 +226,7 @@ def generate_docker_compose(
     results_dir = results_dir or Path(RESULTS_DIR)
 
     return COMPOSE_TEMPLATE.format(
-        compose_path=str(output_dir / COMPOSE_FILENAME),
+        compose_path=(output_dir / COMPOSE_FILENAME).as_posix(),
         evaluator_build_or_image=format_build_or_image(evaluator, output_dir),
         agent_under_test_build_or_image=format_build_or_image(agent_under_test, output_dir),
         port=DEFAULT_PORT,
@@ -316,7 +316,7 @@ def collect_agent_metadata(agent: dict[str, Any]) -> dict[str, Any]:
 
 def compose_up_command(compose_path: Path, env_path: str = ENV_PATH) -> str:
     """Return the recommended Compose command for generated scenario-local files."""
-    return f"docker compose --env-file {env_path} -f {compose_path} up --abort-on-container-exit"
+    return f"docker compose --env-file {env_path} -f {compose_path.as_posix()} up --abort-on-container-exit"
 
 
 def generate_env_file(scenario: dict[str, Any]) -> str:
