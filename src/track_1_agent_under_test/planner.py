@@ -226,6 +226,55 @@ Use REVISE when:
 
 Use PASS only when the current phase is safe to execute as written."""
 
+LANGGRAPH_APPROVED_PLAN_SYSTEM_PROMPT = """You are the planner node inside a LangGraph in-car voice assistant.
+
+Return exactly one JSON object and no extra text.
+
+You receive:
+- langgraph_memory: structured state derived inside the graph,
+- context_bundle: compact recent conversation and tool-result context,
+- external_tools: the only tools that may be called.
+
+Produce one ApprovedPlan for the current turn:
+{
+  "summary": "brief private plan summary",
+  "task_feasible": true,
+  "infeasible_reason": null,
+  "phase": "get | execute | done",
+  "allowed_tools": ["tool names allowed now"],
+  "forbidden_tools": ["tool names forbidden now"],
+  "action_plan": [
+    {"tool": "exact_tool_name", "arguments": {}, "phase": "get | execute", "purpose": "why this call is needed"}
+  ],
+  "response": null
+}
+
+Rules:
+- Use only tools and parameters from external_tools.
+- Do not invent IDs, contacts, weather, route IDs, vehicle facts, or missing result fields.
+- phase=get gathers read-only facts. phase=execute performs approved state changes. phase=done responds.
+- Do not repeat a successful identical read-only call unless the latest user message changes the need.
+- Before state-changing actions, gather required preconditions first.
+- If the requested action needs a missing required tool/parameter/result, set task_feasible=false or phase=done with a concise limitation.
+- For email/calendar/weather text, use 24-hour HH:MM time. Never use AM/PM.
+- If a tool description starts with REQUIRES_CONFIRMATION, ask for confirmation in phase=done unless the latest user confirmed the exact action.
+"""
+
+LANGGRAPH_PLAN_CRITIC_SYSTEM_PROMPT = """You are the critic node inside a LangGraph in-car voice assistant.
+
+Audit one ApprovedPlan before the graph executes it. Return exactly one JSON object:
+{
+  "verdict": "PASS | REVISE",
+  "violations": ["brief issue"],
+  "recommended_changes": ["concrete plan change"],
+  "reasoning": "brief private reason"
+}
+
+Use REVISE when the plan repeats completed work, calls unavailable tools, uses unsupported parameters,
+skips clear preconditions, fabricates IDs or result fields, asks for unnecessary confirmation, or performs
+extra state changes outside the user request.
+"""
+
 CREATE_SUBAGENT_TOOL_SCHEMA = {
     "name": "CreateSubagent",
     "description": (
@@ -371,6 +420,100 @@ class Track1Planner:
             "pec_lite": True,
             "critic_revisions": revisions,
         }
+
+    def _run_langgraph_approved_planner(
+        self,
+        *,
+        context_id: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        graph_memory: dict[str, Any],
+        context_bundle: dict[str, Any],
+        critic_feedback: str,
+        deadline: float,
+        ctx_logger,
+    ) -> tuple[ApprovedPlan, LLMCallMetrics]:
+        available_tool_names = {_tool_name(tool) for tool in tools if _tool_name(tool)}
+        payload = {
+            "task": "Produce an ApprovedPlan for the current LangGraph turn.",
+            "context_id": context_id,
+            "langgraph_memory": graph_memory,
+            "context_bundle": context_bundle,
+            "external_tools": tools,
+            "available_tool_names": sorted(available_tool_names),
+            "critic_feedback": critic_feedback,
+        }
+        start = time.perf_counter()
+        response = completion(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": LANGGRAPH_APPROVED_PLAN_SYSTEM_PROMPT},
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+            ],
+            temperature=self.temperature,
+            timeout=self._remaining_timeout(deadline),
+            num_retries=self.num_retries,
+            **self._reasoning_kwargs(),
+        )
+        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        call_metrics = LLMCallMetrics.from_litellm_response(response, elapsed_ms)
+        plan = normalize_approved_plan(
+            _extract_json_object(_message_content(response)),
+            available_tool_names,
+        )
+        ctx_logger.debug(
+            "LangGraph planner node completed",
+            elapsed_ms=round(elapsed_ms, 1),
+            phase=plan.phase,
+            allowed_tools=plan.allowed_tools,
+            prompt_tokens=call_metrics.prompt_tokens,
+            completion_tokens=call_metrics.completion_tokens,
+        )
+        return plan, call_metrics
+
+    def _run_langgraph_plan_critic(
+        self,
+        *,
+        context_id: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        graph_memory: dict[str, Any],
+        context_bundle: dict[str, Any],
+        plan: ApprovedPlan,
+        deadline: float,
+        ctx_logger,
+    ) -> tuple[CriticVerdict, LLMCallMetrics]:
+        payload = {
+            "context_id": context_id,
+            "conversation": messages[-10:],
+            "langgraph_memory": graph_memory,
+            "context_bundle": context_bundle,
+            "approved_plan": plan.to_dict(),
+            "external_tools": tools,
+            "available_tool_names": sorted(_tool_name(tool) for tool in tools if _tool_name(tool)),
+        }
+        start = time.perf_counter()
+        response = completion(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": LANGGRAPH_PLAN_CRITIC_SYSTEM_PROMPT},
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+            ],
+            temperature=0.0,
+            timeout=self._remaining_timeout(deadline),
+            num_retries=self.num_retries,
+            **self._reasoning_kwargs(),
+        )
+        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        call_metrics = LLMCallMetrics.from_litellm_response(response, elapsed_ms)
+        verdict = normalize_critic_verdict(_extract_json_object(_message_content(response)))
+        ctx_logger.debug(
+            "LangGraph critic node completed",
+            elapsed_ms=round(elapsed_ms, 1),
+            verdict=verdict.verdict,
+            violations=verdict.violations,
+        )
+        return verdict, call_metrics
 
     def _run_approved_planner(
         self,

@@ -955,7 +955,7 @@ class Track1MultiAgentTest(unittest.TestCase):
                 }
             ],
         )
-        self.assertTrue(result.debug["completion_verifier_warnings"])
+        self.assertTrue(result.debug["langgraph_completion_warnings"])
 
     def test_planner_response_gate_blocks_premature_done_when_skill_has_tool_step(self):
         planner = Track1Planner(model="test-model")
@@ -4064,7 +4064,7 @@ class Track1MultiAgentTest(unittest.TestCase):
         self.assertTrue(result.debug["skill_preempted"])
         self.assertEqual(result.debug["skill"], "communication_email")
         self.assertTrue(result.debug["langgraph"])
-        self.assertIn("skill_gate", result.debug["graph_nodes"])
+        self.assertIn("langgraph_skill_gate", result.debug["graph_nodes"])
         self.assertIn("finalize", result.debug["graph_nodes"])
 
     def test_langgraph_workflow_runs_planner_critic_execute_path(self):
@@ -4103,8 +4103,8 @@ class Track1MultiAgentTest(unittest.TestCase):
         def fake_critic(**kwargs):
             return normalize_critic_verdict({"verdict": "PASS"}), LLMCallMetrics(num_calls=1)
 
-        planner._run_approved_planner = fake_approved_planner
-        planner._run_plan_critic = fake_critic
+        planner._run_langgraph_approved_planner = fake_approved_planner
+        planner._run_langgraph_plan_critic = fake_critic
 
         result = planner.choose_next_action(
             context_id="ctx-langgraph-pec",
