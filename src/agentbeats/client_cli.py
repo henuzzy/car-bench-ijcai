@@ -29,6 +29,7 @@ from agentbeats.models import EvalRequest
 
 
 DEFAULT_CLIENT_TIMEOUT = float(os.getenv("AGENTBEATS_CLIENT_TIMEOUT_SECONDS", "21600"))
+STREAM_IDLE_LOG_SECONDS = float(os.getenv("AGENTBEATS_STREAM_IDLE_LOG_SECONDS", "30"))
 
 
 class AgentFailedError(Exception):
@@ -476,8 +477,10 @@ async def main():
 
     # Send message via streaming
     async with httpx.AsyncClient(timeout=DEFAULT_CLIENT_TIMEOUT) as httpx_client:
+        print(f"[Client] connecting to evaluator {evaluator_url}", flush=True)
         resolver = A2ACardResolver(httpx_client=httpx_client, base_url=evaluator_url)
         agent_card = await resolver.get_agent_card()
+        print("[Client] evaluator card received; sending evaluation request", flush=True)
         config = ClientConfig(
             httpx_client=httpx_client,
             streaming=True,
@@ -489,7 +492,20 @@ async def main():
         request = SendMessageRequest(message=outbound_msg)
 
         try:
-            async for event in client.send_message(request):
+            stream = client.send_message(request).__aiter__()
+            next_event = asyncio.create_task(stream.__anext__())
+            while True:
+                try:
+                    event = await asyncio.wait_for(asyncio.shield(next_event), timeout=STREAM_IDLE_LOG_SECONDS)
+                except asyncio.TimeoutError:
+                    print(
+                        f"[Client] still waiting for evaluator stream ({STREAM_IDLE_LOG_SECONDS:g}s idle)",
+                        flush=True,
+                    )
+                    continue
+                except StopAsyncIteration:
+                    break
+                next_event = asyncio.create_task(stream.__anext__())
                 payload_type = event.WhichOneof("payload")
 
                 if payload_type == "message":

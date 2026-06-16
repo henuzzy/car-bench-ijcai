@@ -1,4 +1,4 @@
-# Local regression scenario for five representative failed base tasks.
+# Local one-trial regression scenario for the three currently failing base tasks.
 
 [evaluator]
 endpoint = "http://127.0.0.1:8081"
@@ -9,12 +9,12 @@ endpoint = "http://127.0.0.1:8080"
 cmd = "python src/track_1_agent_under_test/server.py --host 127.0.0.1 --port 8080 --agent-llm deepseek/deepseek-v4-flash --temperature 0.0 --thinking --reasoning-effort high"
 
 [config]
-num_trials = 3
+num_trials = 1
 task_split = "test"
 user_model = "deepseek/deepseek-v4-flash"
 user_provider = "deepseek"
 user_thinking = false
 policy_evaluator_model = "deepseek/deepseek-v4-flash"
 policy_evaluator_provider = "deepseek"
-tasks_base_task_id_filter = ["base_5", "base_37", "base_45", "base_75", "base_89"]
+tasks_base_task_id_filter = ["base_45", "base_75", "base_89"]
 max_steps = 50

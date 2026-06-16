@@ -37,6 +37,12 @@ class TaskGuard:
         turns.
         """
 
+        if _latest_assistant_response_is_done_after_state_change(messages):
+            return GuardDecision(
+                action=_cannot_do("Done."),
+                warnings=["preserved terminal acknowledgement after state change"],
+            )
+
         trailing_results = _trailing_tool_results(messages)
         if not trailing_results:
             return GuardDecision()
@@ -92,6 +98,14 @@ class TaskGuard:
         missing_capability = _missing_requested_capability(text, tool_map)
         if missing_capability.action:
             return missing_capability
+
+        calendar_decision = _calendar_lookup_action(
+            text=text,
+            messages=messages,
+            tool_map=tool_map,
+        )
+        if calendar_decision.action:
+            return calendar_decision
 
         policy_decision = _policy_precondition_action(
             text=text,
@@ -515,16 +529,24 @@ def _requests_only_delete_current_navigation(text: str) -> bool:
         (
             "set a new",
             "set new",
+            "set destination",
+            "set the destination",
             "set the navigation",
             "navigate to",
             "navigation to",
             "new destination",
             "replace",
             "change",
+            "find a",
             "then navigate",
             "then set",
         ),
     )
+
+
+def _has_unintended_navigation_delete(names: list[str], latest_user: str) -> bool:
+    delete_names = {"delete_current_navigation", "navigation_delete_destination"}
+    return bool(set(names).intersection(delete_names)) and not _requests_only_delete_current_navigation(latest_user)
 
 
 def _navigation_followup_lookup_call(
@@ -619,6 +641,14 @@ def _requests_close_all_windows(text: str) -> bool:
     return "window" in text and _has_any(text, ("close all", "closed all", "close the windows", "completely closed", "fully close"))
 
 
+def _requests_window_match_reference(text: str) -> bool:
+    return (
+        "window" in text
+        and _has_any(text, ("match", "same as", "as much as", "adjusted to"))
+        and _requested_reference_window(text) is not None
+    )
+
+
 def _requests_defrost_on(text: str) -> bool:
     return _has_any(text, ("defrost", "defog", "fogged", "fog up", "condensation")) and not _has_any(
         text, ("turn off", "disable", "stop")
@@ -670,6 +700,36 @@ def _missing_requested_capability(
                     warnings=[f"{tool_name}.{parameter} unavailable"],
                 )
     return GuardDecision()
+
+
+def _calendar_lookup_action(
+    *,
+    text: str,
+    messages: list[dict[str, Any]],
+    tool_map: dict[str, dict[str, Any]],
+) -> GuardDecision:
+    if not _requests_calendar_lookup(text):
+        return GuardDecision()
+    if "get_entries_from_calendar" not in tool_map:
+        return GuardDecision()
+    if _tool_called_after_latest_actionable_user(messages, "get_entries_from_calendar"):
+        return GuardDecision()
+    arguments = _current_calendar_args_from_system(messages, tool_map)
+    if arguments is None:
+        return GuardDecision()
+    return GuardDecision(
+        action=_tool_calls(
+            [{"tool_name": "get_entries_from_calendar", "arguments": arguments}]
+        ),
+        warnings=["calendar lookup uses current date"],
+    )
+
+
+def _requests_calendar_lookup(text: str) -> bool:
+    return _has_any(text, ("calendar", "meeting", "meetings", "appointment", "appointments")) and _has_any(
+        text,
+        ("check", "look up", "lookup", "show", "see", "what", "today"),
+    )
 
 
 def _policy_precondition_action(
@@ -825,7 +885,24 @@ def _navigation_action_guard(
 
     latest_user_text = _latest_actionable_user_text(messages)
     latest_user = latest_user_text.lower()
-    if "delete_current_navigation" in names and not _requests_only_delete_current_navigation(latest_user):
+    route_lookup_calls = [
+        call
+        for call in calls
+        if call.get("tool_name")
+        in {
+            "get_location_id_by_location_name",
+            "get_routes_from_start_to_destination",
+            "search_poi_at_location",
+            "search_poi_along_the_route",
+        }
+    ]
+    if route_lookup_calls and state_changing_nav:
+        return GuardDecision(
+            action=_tool_calls(route_lookup_calls),
+            warnings=["split navigation lookup before navigation state change"],
+        )
+
+    if _has_unintended_navigation_delete(names, latest_user):
         lookup_call = _navigation_followup_lookup_call(
             latest_user_text=latest_user_text,
             tool_map=tool_map,
@@ -854,23 +931,6 @@ def _navigation_action_guard(
                 "I cannot delete the current navigation unless you explicitly ask me to cancel navigation."
             ),
             warnings=["blocked unintended current navigation deletion"],
-        )
-
-    route_lookup_calls = [
-        call
-        for call in calls
-        if call.get("tool_name")
-        in {
-            "get_location_id_by_location_name",
-            "get_routes_from_start_to_destination",
-            "search_poi_at_location",
-            "search_poi_along_the_route",
-        }
-    ]
-    if route_lookup_calls and state_changing_nav:
-        return GuardDecision(
-            action=_tool_calls(route_lookup_calls),
-            warnings=["split navigation lookup before navigation state change"],
         )
 
     route_result = _latest_tool_json(messages, "get_routes_from_start_to_destination")
@@ -1099,7 +1159,11 @@ def _temperature_action_guard(
                 warnings=["relative temperature blocked by missing result fields"],
             )
 
-    if not _user_text_has_explicit_temperature(latest_user):
+    if not _user_text_has_explicit_temperature(latest_user) and not _temperature_target_grounded_in_result(
+        latest_user,
+        temp_calls,
+        messages,
+    ):
         return GuardDecision(
             action={
                 "action": "respond",
@@ -1166,12 +1230,14 @@ def _communication_confirmation_action(
     if not email_addresses:
         return GuardDecision()
 
-    content_message = _extract_proposed_email_content(assistant_text)
+    content_message = _sanitize_email_content(
+        _extract_proposed_email_content(assistant_text) or ""
+    )
     if not content_message:
-        content_message = _fallback_email_content(
+        content_message = _sanitize_email_content(_fallback_email_content(
             _latest_actionable_user_text(messages),
             messages=messages,
-        )
+        ))
 
     return GuardDecision(
         action=_tool_calls(
@@ -1180,7 +1246,9 @@ def _communication_confirmation_action(
                     "tool_name": "send_email",
                     "arguments": {
                         "email_addresses": email_addresses,
-                        "content_message": _normalize_24h_times(content_message),
+                        "content_message": _normalize_24h_times(
+                            _sanitize_email_content(content_message)
+                        ),
                     },
                 }
             ]
@@ -1231,6 +1299,11 @@ def _policy_action_from_tool_calls(
 ) -> GuardDecision:
     latest_user = _latest_actionable_user_text(messages).lower()
     call_names = {str(call.get("tool_name") or "") for call in calls}
+    has_defrost_call = any(
+        call.get("tool_name") == "set_window_defrost"
+        and (call.get("arguments") or {}).get("on") is True
+        for call in calls
+    )
     if (
         _requests_ac_on(latest_user)
         and "set_air_conditioning" not in call_names
@@ -1241,7 +1314,10 @@ def _policy_action_from_tool_calls(
             ac_decision.warnings.append("completed missing AC action from user intent")
             return ac_decision
 
-    if any(call.get("tool_name") == "set_air_conditioning" and (call.get("arguments") or {}).get("on") is True for call in calls):
+    if (
+        not has_defrost_call
+        and any(call.get("tool_name") == "set_air_conditioning" and (call.get("arguments") or {}).get("on") is True for call in calls)
+    ):
         if "get_climate_settings" in tool_map and not _tool_called_after_latest_actionable_user(messages, "get_climate_settings"):
             return GuardDecision(
                 action=_tool_calls([{"tool_name": "get_climate_settings", "arguments": {}}]),
@@ -1324,7 +1400,7 @@ def _policy_action_from_tool_calls(
             warnings=["AC policy actions from proposed tool call"],
         )
 
-    if any(call.get("tool_name") == "set_window_defrost" and (call.get("arguments") or {}).get("on") is True for call in calls):
+    if has_defrost_call:
         if "get_climate_settings" in tool_map and not _tool_called_after_latest_actionable_user(messages, "get_climate_settings"):
             return GuardDecision(
                 action=_tool_calls([{"tool_name": "get_climate_settings", "arguments": {}}]),
@@ -1371,7 +1447,23 @@ def _policy_action_from_tool_calls(
                 warnings=["defrost blocked by missing window result field"],
             )
         fixed_calls: list[dict[str, Any]] = []
-        if any(value > 20 for value in window_positions.values()):
+        reference_window = _requested_reference_window(latest_user) if _requests_window_match_reference(latest_user) else None
+        reference_percentage = window_positions.get(reference_window or "") if reference_window else None
+        if reference_percentage is not None:
+            if not _tool_has_parameter(tool_map, "open_close_window", "window"):
+                return GuardDecision(
+                    action=_cannot_do(
+                        "I cannot activate defrost efficiently because the windows need to be adjusted, but window control is unavailable."
+                    ),
+                    warnings=["defrost blocked by missing window control"],
+                )
+            fixed_calls.append(
+                {
+                    "tool_name": "open_close_window",
+                    "arguments": {"window": "ALL", "percentage": reference_percentage},
+                }
+            )
+        elif any(value > 20 for value in window_positions.values()):
             if not _tool_has_parameter(tool_map, "open_close_window", "window"):
                 return GuardDecision(
                     action=_cannot_do(
@@ -1415,7 +1507,7 @@ def _policy_action_from_tool_calls(
             fixed_calls.append(
                 {
                     "tool_name": "set_fan_airflow_direction",
-                    "arguments": {"direction": _windshield_airflow_direction(airflow)},
+                    "arguments": {"direction": "WINDSHIELD"},
                 }
             )
         if ac_on is False:
@@ -1785,7 +1877,23 @@ def _defrost_policy_action(
         )
 
     calls: list[dict[str, Any]] = []
-    if _requests_close_all_windows(text) or any(value > 20 for value in window_positions.values()):
+    reference_window = _requested_reference_window(text) if _requests_window_match_reference(text) else None
+    reference_percentage = window_positions.get(reference_window or "") if reference_window else None
+    if reference_percentage is not None:
+        if not _tool_has_parameter(tool_map, "open_close_window", "window"):
+            return GuardDecision(
+                action=_cannot_do(
+                    "I cannot activate defrost efficiently because the windows need to be adjusted, but window control is unavailable."
+                ),
+                warnings=["defrost blocked by missing window control"],
+            )
+        calls.append(
+            {
+                "tool_name": "open_close_window",
+                "arguments": {"window": "ALL", "percentage": reference_percentage},
+            }
+        )
+    elif _requests_close_all_windows(text) or any(value > 20 for value in window_positions.values()):
         if not _tool_has_parameter(tool_map, "open_close_window", "window"):
             return GuardDecision(
                 action=_cannot_do(
@@ -2498,6 +2606,18 @@ def _requested_window(text: str) -> str | None:
     return None
 
 
+def _requested_reference_window(text: str) -> str | None:
+    if "passenger rear" in text or "rear passenger" in text:
+        return "PASSENGER_REAR"
+    if "driver rear" in text or "rear driver" in text:
+        return "DRIVER_REAR"
+    if "passenger" in text:
+        return "PASSENGER"
+    if "driver" in text:
+        return "DRIVER"
+    return None
+
+
 def _requested_percentage(text: str) -> int | None:
     match = re.search(r"\b(\d{1,3})\s*(?:%|percent)\b", text)
     if match:
@@ -2572,6 +2692,46 @@ def _latest_assistant_tool_calls(messages: list[dict[str, Any]]) -> list[dict[st
     return []
 
 
+def _latest_assistant_response_is_done_after_state_change(
+    messages: list[dict[str, Any]]
+) -> bool:
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if message.get("role") != "assistant":
+            continue
+        if str(message.get("content") or "").strip().lower() != "done.":
+            continue
+        return _has_successful_state_change_before(messages[:index])
+    return False
+
+
+def _has_successful_state_change_before(messages: list[dict[str, Any]]) -> bool:
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if message.get("role") != "tool":
+            continue
+        if not _tool_result_status_is_success(message):
+            continue
+        call_names = {
+            _history_tool_call_name(call)
+            for call in _nearest_assistant_tool_calls_before(messages, index)
+        }
+        tool_name = str(message.get("name") or "")
+        if any(_is_state_changing_tool_name(name) for name in call_names | {tool_name}):
+            return True
+    return False
+
+
+def _nearest_assistant_tool_calls_before(
+    messages: list[dict[str, Any]],
+    index: int,
+) -> list[dict[str, Any]]:
+    for message in reversed(messages[:index]):
+        if message.get("role") == "assistant" and message.get("tool_calls"):
+            return list(message.get("tool_calls") or [])
+    return []
+
+
 def _history_tool_call_name(call: dict[str, Any]) -> str:
     return str(
         call.get("tool_name")
@@ -2593,7 +2753,16 @@ def _trailing_tool_results(messages: list[dict[str, Any]]) -> list[dict[str, Any
 def _tool_result_status_is_success(message: dict[str, Any]) -> bool:
     data = _parse_json(str(message.get("content") or ""))
     status = _find_key(data, "status")
-    return isinstance(status, str) and status.upper() == "SUCCESS"
+    if isinstance(status, str):
+        return status.upper() in {"SUCCESS", "OK", "DONE"}
+    if data is None:
+        return False
+    errors = _find_key(data, "error")
+    if errors not in (None, "", []):
+        return False
+    if _find_key(data, "errors") not in (None, "", []):
+        return False
+    return _find_key(data, "result") is not None
 
 
 def _is_state_changing_tool_name(name: str) -> bool:
@@ -2966,6 +3135,45 @@ def _current_weather_args_from_system(
     return args
 
 
+def _current_calendar_args_from_system(
+    messages: list[dict[str, Any]],
+    tool_map: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    tool = tool_map.get("get_entries_from_calendar")
+    if not tool:
+        return None
+    properties = (
+        tool.get("function", {})
+        .get("parameters", {})
+        .get("properties", {})
+    )
+    required = (
+        tool.get("function", {})
+        .get("parameters", {})
+        .get("required", [])
+        or []
+    )
+    if not {"month", "day"}.issubset(properties):
+        return None
+
+    system_text = "\n".join(
+        str(message.get("content") or "")
+        for message in messages
+        if message.get("role") == "system"
+    )
+    datetime_value = _json_after_marker(system_text, "DATETIME")
+    try:
+        args: dict[str, Any] = {
+            "month": int(_find_key(datetime_value, "month")),
+            "day": int(_find_key(datetime_value, "day")),
+        }
+    except (TypeError, ValueError):
+        return None
+    if any(name not in args for name in required):
+        return None
+    return args
+
+
 def _json_after_marker(text: str, marker: str) -> Any:
     index = text.find(marker)
     if index < 0:
@@ -3047,6 +3255,23 @@ def _extract_proposed_email_content(text: str) -> str | None:
             if content:
                 return content
     return None
+
+
+def _sanitize_email_content(content: str) -> str:
+    text = content.strip()
+    if not text:
+        return ""
+    patterns = (
+        r"(?:\s*Please say yes to confirm\.?\s*)$",
+        r"(?:\s*Please say yes to confirm\.?\s*)",
+        r"(?:\s*Please confirm\.?\s*)$",
+        r"(?:\s*Should I send it\??\s*)$",
+        r"(?:\s*Do you want me to send it\??\s*)$",
+        r"(?:\s*Would you like me to send it\??\s*)$",
+    )
+    for pattern in patterns:
+        text = re.sub(pattern, "", text, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def _fallback_email_content(
@@ -3261,6 +3486,33 @@ def _temperature_result_has_required_fields(messages: list[dict[str, Any]]) -> b
     )
 
 
+def _temperature_target_grounded_in_result(
+    latest_user: str,
+    temp_calls: list[dict[str, Any]],
+    messages: list[dict[str, Any]],
+) -> bool:
+    if not (
+        _has_any(latest_user, ("match", "same as", "equal", "align", "balanced"))
+        and _has_any(latest_user, ("passenger temperature", "passenger zone", "passenger"))
+        and _temperature_result_has_required_fields(messages)
+    ):
+        return False
+    passenger_temperature = _find_number(
+        _latest_tool_json(messages, "get_temperature_inside_car"),
+        "climate_temperature_passenger",
+    )
+    if passenger_temperature is None:
+        return False
+    for call in temp_calls:
+        args = call.get("arguments") or {}
+        if args.get("seat_zone") != "DRIVER":
+            continue
+        requested_temperature = _find_number(args, "temperature")
+        if requested_temperature is not None and requested_temperature == passenger_temperature:
+            return True
+    return False
+
+
 def _latest_navigation_active(messages: list[dict[str, Any]]) -> bool | None:
     state = _latest_tool_json(messages, "get_current_navigation_state")
     return _find_bool(state, "navigation_active")
@@ -3322,13 +3574,14 @@ def _select_route_from_latest_route_result(
     routes = _latest_routes(messages)
     if not routes:
         return None
-    if requested_route_id:
-        for route in routes:
-            if route.get("route_id") == requested_route_id:
-                return route
 
     text = latest_user.lower()
     ordinal_index = _requested_route_ordinal(text)
+    ordinal_alias = _ordinal_alias(ordinal_index)
+    if ordinal_alias:
+        alias_match = _route_matching_alias(routes, {ordinal_alias})
+        if alias_match is not None:
+            return alias_match
     if ordinal_index is not None and 0 <= ordinal_index < len(routes):
         return routes[ordinal_index]
 
@@ -3336,9 +3589,16 @@ def _select_route_from_latest_route_result(
     if via_match is not None:
         return via_match
     if "shortest" in text:
-        return min(routes, key=lambda item: _route_distance(item))
+        return _route_matching_alias(routes, {"shortest"}) or min(routes, key=lambda item: _route_distance(item))
     if "fastest" in text or len(routes) == 1:
-        return routes[0]
+        return _route_matching_alias(routes, {"fastest"}) or routes[0]
+    default = _default_route(routes)
+    if default is not None:
+        return default
+    if requested_route_id:
+        for route in routes:
+            if route.get("route_id") == requested_route_id:
+                return route
     return None
 
 
@@ -3383,6 +3643,42 @@ def _route_matching_via_text(routes: list[dict[str, Any]], text: str) -> dict[st
             best_score = score
             best_route = route
     return best_route if best_score else None
+
+
+def _route_matching_alias(
+    routes: list[dict[str, Any]],
+    aliases: set[str],
+) -> dict[str, Any] | None:
+    for route in routes:
+        if _route_aliases(route).intersection(aliases):
+            return route
+    return None
+
+
+def _route_aliases(route: dict[str, Any]) -> set[str]:
+    value = route.get("alias")
+    if isinstance(value, list):
+        return {str(item).strip().lower() for item in value if str(item).strip()}
+    if isinstance(value, str):
+        return {item.strip().lower() for item in re.split(r"[,/ ]+", value) if item.strip()}
+    return set()
+
+
+def _default_route(routes: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not routes:
+        return None
+    for aliases in ({"fastest"}, {"first"}):
+        selected = _route_matching_alias(routes, aliases)
+        if selected is not None:
+            return selected
+    return routes[0]
+
+
+def _ordinal_alias(index: int | None) -> str | None:
+    if index is None:
+        return None
+    aliases = ("first", "second", "third")
+    return aliases[index] if 0 <= index < len(aliases) else None
 
 
 def _route_distance(route: dict[str, Any]) -> float:

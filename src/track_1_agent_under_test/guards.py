@@ -210,7 +210,21 @@ def _has_recent_confirmation(messages: list[dict[str, Any]]) -> bool:
             break
     if not _is_confirmation_text(latest_user):
         return False
-    return any(word in previous_assistant for word in ("confirm", "confirmation", "yes", "need your"))
+    return any(
+        phrase in previous_assistant
+        for phrase in (
+            "confirm",
+            "confirmation",
+            "need your",
+            "should i",
+            "shall i",
+            "do you want",
+            "want me to",
+            "send",
+            "proceed",
+            "go ahead",
+        )
+    )
 
 
 def _is_confirmation_text(content: str) -> bool:
@@ -246,6 +260,12 @@ def _recent_tool_text_contains(messages: list[dict[str, Any]], pieces: tuple[str
 
 
 def _format_action_detail(name: str, arguments: dict[str, Any]) -> str:
+    if name == "send_email":
+        addresses = arguments.get("email_addresses")
+        if isinstance(addresses, list) and addresses:
+            recipients = ", ".join(str(address) for address in addresses)
+            return f"send_email to {recipients} with the gathered details"
+        return "send_email with the gathered details"
     if not arguments:
         return str(name)
     arg_text = ", ".join(f"{key}={value}" for key, value in arguments.items())

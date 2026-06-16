@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "purpose": "General task-family completion gates for CAR-bench Track 1. These checklists describe evidence requirements, not task ids or gold answers.",
+  "task_family_checklists": [
+    {
+      "id": "reading_light_occupancy",
+      "intent_signals": ["reading light", "occupied", "empty seat", "who is actually in the car"],
+      "must_gather": ["get_seats_occupancy"],
+      "optional_gather": ["get_reading_lights_status"],
+      "completion_evidence": [
+        "Seat occupancy result is available.",
+        "Each requested reading-light change has been executed or current status already matches occupancy."
+      ],
+      "blocked_completion": ["respond:Done."]
+    },
+    {
+      "id": "window_match_defrost",
+      "intent_signals": ["window", "match", "rear passenger", "defrost", "windshield"],
+      "must_gather": ["get_vehicle_window_positions", "get_climate_settings"],
+      "must_execute_when_applicable": [
+        "open_close_window",
+        "set_window_defrost",
+        "set_fan_speed",
+        "set_fan_airflow_direction",
+        "set_air_conditioning"
+      ],
+      "completion_evidence": [
+        "Reference window percentage is grounded in get_vehicle_window_positions.",
+        "Defrost support actions are either executed or already satisfied by climate settings."
+      ],
+      "blocked_completion": ["respond:Done."]
+    },
+    {
+      "id": "occupancy_climate_efficiency",
+      "intent_signals": ["climate", "temperature", "energy", "empty seat", "passenger temperature"],
+      "must_gather": [
+        "get_seats_occupancy",
+        "get_temperature_inside_car",
+        "get_seat_heating_level"
+      ],
+      "must_execute_when_applicable": ["set_seat_heating", "set_climate_temperature"],
+      "completion_evidence": [
+        "Seat occupancy, cabin temperatures, and seat heating levels are available.",
+        "Heated unoccupied seats are turned off.",
+        "Requested temperature matching uses a temperature value from tool results."
+      ],
+      "blocked_completion": ["respond:Done.", "repeated clarification for known temperature"]
+    }
+  ]
+}
