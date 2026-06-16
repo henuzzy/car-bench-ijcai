@@ -15,6 +15,7 @@ from track_1_agent_under_test.context_manager import (
     SINGLE_TOOL_RESULT_CHAR_LIMIT,
 )
 from track_1_agent_under_test.guards import PolicyGuard, SchemaGuard
+from track_1_agent_under_test.multi_agent_types import LLMCallMetrics
 from track_1_agent_under_test.plan_state import PlanStateStore
 from track_1_agent_under_test.planner import Track1Planner
 from track_1_agent_under_test.skills import SkillRegistry
@@ -4062,6 +4063,73 @@ class Track1MultiAgentTest(unittest.TestCase):
         self.assertEqual(result.metrics.num_calls, 0)
         self.assertTrue(result.debug["skill_preempted"])
         self.assertEqual(result.debug["skill"], "communication_email")
+        self.assertTrue(result.debug["langgraph"])
+        self.assertIn("skill_gate", result.debug["graph_nodes"])
+        self.assertIn("finalize", result.debug["graph_nodes"])
+
+    def test_langgraph_workflow_runs_planner_critic_execute_path(self):
+        planner = Track1Planner(model="test-model")
+
+        class NoopTaskGuard:
+            def finish_after_stop_signal(self, *, messages):
+                return SimpleNamespace(action=None, warnings=[])
+
+            def finish_after_successful_state_change(self, *, messages):
+                return SimpleNamespace(action=None, warnings=[])
+
+            def preempt(self, *, messages, tools):
+                return SimpleNamespace(action=None, warnings=[])
+
+            def postprocess(self, *, action, tools, messages):
+                return SimpleNamespace(action=None, warnings=[])
+
+        class NoopSkills:
+            def preempt(self, *, messages, tools):
+                return SimpleNamespace(action=None, skill=None, warnings=[])
+
+        planner.task_guard = NoopTaskGuard()
+        planner.skill_registry = NoopSkills()
+
+        def fake_approved_planner(**kwargs):
+            return (
+                ApprovedPlan(
+                    phase="get",
+                    allowed_tools=["get_weather"],
+                    action_plan=[ApprovedStep(tool="get_weather", arguments={}, phase="get")],
+                ),
+                LLMCallMetrics(num_calls=1),
+            )
+
+        def fake_critic(**kwargs):
+            return normalize_critic_verdict({"verdict": "PASS"}), LLMCallMetrics(num_calls=1)
+
+        planner._run_approved_planner = fake_approved_planner
+        planner._run_plan_critic = fake_critic
+
+        result = planner.choose_next_action(
+            context_id="ctx-langgraph-pec",
+            messages=[{"role": "user", "content": "What's the weather?"}],
+            tools=[_tool("get_weather")],
+            ctx_logger=SimpleNamespace(
+                warning=lambda *args, **kwargs: None,
+                info=lambda *args, **kwargs: None,
+                debug=lambda *args, **kwargs: None,
+                error=lambda *args, **kwargs: None,
+            ),
+        )
+
+        self.assertEqual(result.next_action["action"], "tool_calls")
+        self.assertEqual(
+            result.next_action["tool_calls"],
+            [{"tool_name": "get_weather", "arguments": {}}],
+        )
+        self.assertTrue(result.debug["langgraph"])
+        self.assertTrue(result.debug["pec_lite"])
+        self.assertIn("approved_planner", result.debug["graph_nodes"])
+        self.assertIn("plan_critic", result.debug["graph_nodes"])
+        self.assertIn("execute_plan", result.debug["graph_nodes"])
+        self.assertIn("finalize", result.debug["graph_nodes"])
+        self.assertEqual(result.metrics.num_calls, 2)
 
     def test_task_guard_asks_for_at_kilometer_for_charging_station_route_search(self):
         decision = TaskGuard().postprocess(

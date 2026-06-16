@@ -32,6 +32,17 @@ EXPECTED_SCENARIO_FILES = {
     "ghcr_test_set.toml",
 }
 
+EXTRA_SCENARIO_FILES_BY_DIR = {
+    Path("scenarios/track_1_agent_under_test"): {
+        "local_base_alt_failed5.toml",
+        "local_base_alt_failed5_trial1.toml",
+        "local_base_failed3_trial1.toml",
+        "local_base_failed5.toml",
+        "local_base_failed5_trial1.toml",
+        "local_base_hard5_trial1.toml",
+    },
+}
+
 SCENARIO_DIRS = [
     Path("scenarios/track_1_agent_under_test"),
     Path("scenarios/track_2_agent_under_test_codex"),
@@ -83,7 +94,12 @@ class ScenarioContractTest(unittest.TestCase):
                     for path in scenario_dir.glob("*.toml")
                     if path.name != "a2a-scenario.toml"
                 }
-                self.assertEqual(files, EXPECTED_SCENARIO_FILES)
+                allowed_files = EXPECTED_SCENARIO_FILES | EXTRA_SCENARIO_FILES_BY_DIR.get(
+                    scenario_dir,
+                    set(),
+                )
+                self.assertTrue(EXPECTED_SCENARIO_FILES.issubset(files))
+                self.assertFalse(files - allowed_files)
 
                 for name in ("local_smoke.toml", "local_docker_smoke.toml", "ghcr_smoke.toml"):
                     data = tomllib.loads((scenario_dir / name).read_text())

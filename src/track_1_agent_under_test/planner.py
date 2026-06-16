@@ -22,6 +22,7 @@ try:
     from .context_manager import ContextManager
     from .failure_guard import FailureGuard
     from .guards import PolicyGuard, SchemaGuard
+    from .langgraph_workflow import Track1LangGraphWorkflow
     from .multi_agent_types import LLMCallMetrics, PlannerResult, SubagentProposal
     from .plan_state import PlanStateStore
     from .skills import SkillRegistry
@@ -41,6 +42,7 @@ except ImportError:
     from context_manager import ContextManager
     from failure_guard import FailureGuard
     from guards import PolicyGuard, SchemaGuard
+    from langgraph_workflow import Track1LangGraphWorkflow
     from multi_agent_types import LLMCallMetrics, PlannerResult, SubagentProposal
     from plan_state import PlanStateStore
     from skills import SkillRegistry
@@ -284,6 +286,7 @@ class Track1Planner:
         self.max_internal_steps = int(os.getenv("AGENT_MAX_INTERNAL_STEPS", "4"))
         self.max_critic_revisions = int(os.getenv("AGENT_MAX_CRITIC_REVISIONS", "1"))
         self.turn_budget_seconds = float(os.getenv("AGENT_TURN_BUDGET_SECONDS", "45"))
+        self.langgraph_workflow = Track1LangGraphWorkflow(self)
 
     def reset(self, context_id: str) -> None:
         self.context_manager.reset(context_id)
@@ -298,144 +301,11 @@ class Track1Planner:
         tools: list[dict[str, Any]],
         ctx_logger,
     ) -> PlannerResult:
-        turn_deadline = time.perf_counter() + self.turn_budget_seconds
-        metrics = LLMCallMetrics()
-        self.context_manager.observe_messages(context_id, messages)
-        self.task_memory.observe_messages(context_id, messages)
-        self.plan_state.observe_messages(context_id, messages, tools)
-
-        debug: dict[str, Any] = {
-            "planner": MAIN_PLANNER_NAME,
-            "repair_used": False,
-            "native_fallback_used": False,
-            "plan_state": self.plan_state.snapshot(context_id),
-        }
-
-        stop_decision = self.task_guard.finish_after_stop_signal(messages=messages)
-        if stop_decision.action:
-            return PlannerResult(
-                next_action=stop_decision.action,
-                metrics=metrics,
-                internal_calls=0,
-                debug={
-                    **debug,
-                    "task_guard_warnings": stop_decision.warnings,
-                    "terminal_stop_signal": True,
-                },
-            )
-
-        skill_decision = self.skill_registry.preempt(messages=messages, tools=tools)
-        if skill_decision.action:
-            return self._finalize_visible_action(
-                context_id=context_id,
-                action=skill_decision.action,
-                tools=tools,
-                messages=messages,
-                metrics=metrics,
-                debug={
-                    **debug,
-                    "skill_preempted": True,
-                    "skill": skill_decision.skill,
-                    "skill_warnings": skill_decision.warnings,
-                },
-                internal_calls_floor=0,
-            )
-
-        finish_decision = self.task_guard.finish_after_successful_state_change(
-            messages=messages
-        )
-        if finish_decision.action:
-            return self._finalize_visible_action(
-                context_id=context_id,
-                action=finish_decision.action,
-                tools=tools,
-                messages=messages,
-                metrics=metrics,
-                debug={
-                    **debug,
-                    "task_guard_warnings": finish_decision.warnings,
-                    "terminal_after_state_change": True,
-                },
-                internal_calls_floor=0,
-            )
-
-        preempt_decision = self.task_guard.preempt(messages=messages, tools=tools)
-        if preempt_decision.action:
-            return self._finalize_visible_action(
-                context_id=context_id,
-                action=preempt_decision.action,
-                tools=tools,
-                messages=messages,
-                metrics=metrics,
-                debug={
-                    **debug,
-                    "task_guard_warnings": preempt_decision.warnings,
-                    "task_guard_preempted": True,
-                },
-                internal_calls_floor=0,
-            )
-
-        try:
-            approved_plan, critic, pec_metrics, pec_debug = self._build_approved_plan(
-                context_id=context_id,
-                messages=messages,
-                tools=tools,
-                metrics=metrics,
-                deadline=turn_deadline,
-                ctx_logger=ctx_logger,
-            )
-            metrics.add(pec_metrics)
-            action = self._execute_approved_plan(approved_plan, tools)
-            if action:
-                return self._finalize_visible_action(
-                    context_id=context_id,
-                    action=action,
-                    tools=tools,
-                    messages=messages,
-                    metrics=metrics,
-                    debug={
-                        **debug,
-                        **pec_debug,
-                        "approved_plan": approved_plan.to_dict(),
-                        "critic": critic.to_dict(),
-                        "task_memory": self.task_memory.snapshot(context_id),
-                    },
-                )
-            ctx_logger.warning(
-                "Approved plan did not produce an executable action",
-                approved_plan=approved_plan.to_dict(),
-            )
-        except Exception as exc:
-            ctx_logger.warning("PEC-lite planning failed; falling back", error=str(exc))
-
-        if self._remaining_timeout(turn_deadline) <= 1.0:
-            return self._finalize_visible_action(
-                context_id=context_id,
-                action={
-                    "action": "respond",
-                    "content": "I cannot safely complete that with the available tools.",
-                },
-                tools=tools,
-                messages=messages,
-                metrics=metrics,
-                debug={**debug, "turn_budget_exhausted": True},
-                internal_calls_floor=max(metrics.num_calls, 1),
-            )
-
-        fallback = self._native_fallback(
+        return self.langgraph_workflow.invoke(
+            context_id=context_id,
             messages=messages,
             tools=tools,
             ctx_logger=ctx_logger,
-            deadline=turn_deadline,
-        )
-        metrics.add(fallback.metrics)
-        return self._finalize_visible_action(
-            context_id=context_id,
-            action=fallback.next_action,
-            tools=tools,
-            messages=messages,
-            metrics=metrics,
-            debug={**debug, **fallback.debug, "native_fallback_used": True},
         )
 
     def _build_approved_plan(
