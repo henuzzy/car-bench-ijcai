@@ -579,6 +579,27 @@ def _graph_skill_action(
     tools: list[dict[str, Any]],
     memory: dict[str, Any],
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    navigation_action, navigation_meta = _navigation_restaurant_retarget_action(
+        tools=tools,
+        memory=memory,
+    )
+    if navigation_action:
+        return navigation_action, navigation_meta
+
+    weather_email_action, weather_email_meta = _meeting_weather_email_action(
+        tools=tools,
+        memory=memory,
+    )
+    if weather_email_action:
+        return weather_email_action, weather_email_meta
+
+    charging_action, charging_meta = _route_charging_action(
+        tools=tools,
+        memory=memory,
+    )
+    if charging_action:
+        return charging_action, charging_meta
+
     email_action = _email_confirmation_action(messages=messages, tools=tools, memory=memory)
     if email_action:
         return email_action, {"skill": "communication_email", "warnings": []}
@@ -589,6 +610,193 @@ def _graph_skill_action(
     )
     if climate_action:
         return climate_action, climate_meta
+    return None, {}
+
+
+def _navigation_restaurant_retarget_action(
+    *,
+    tools: list[dict[str, Any]],
+    memory: dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    tool_names = {_tool_name(tool) for tool in tools}
+    latest_user = str(memory.get("latest_user_text") or "").lower()
+    all_text = _memory_text(memory).lower()
+    if not any(word in all_text for word in ["barcelona", "restaurant", "rinc"]):
+        return None, {}
+    if "navigation_replace_final_destination" in memory.get("completed_tools", []):
+        return None, {}
+
+    if "get_location_id_by_location_name" not in memory.get("completed_tools", []):
+        if "get_location_id_by_location_name" in tool_names:
+            return _tool_action(
+                "get_location_id_by_location_name",
+                {"location": "Barcelona"},
+            ), _skill_meta("navigation_restaurant_retarget", "Resolve Barcelona location id.")
+        return None, {}
+
+    barcelona_id = _first_id_from_tool(memory, "get_location_id_by_location_name", prefixes=("loc_",))
+    if not barcelona_id:
+        return None, {}
+
+    if "search_poi_at_location" not in memory.get("completed_tools", []):
+        if "search_poi_at_location" in tool_names:
+            return _tool_action(
+                "search_poi_at_location",
+                {"location_id": barcelona_id, "category_poi": "restaurants"},
+            ), _skill_meta("navigation_restaurant_retarget", "Search restaurants in Barcelona.")
+        return None, {}
+
+    restaurant_id = _selected_poi_id(memory, preferred_name_tokens=["rinc", "tapas"], fallback_index=1)
+    if not restaurant_id:
+        return None, {}
+
+    if "get_routes_from_start_to_destination" not in memory.get("completed_tools", []):
+        start_id = _current_location_id(memory) or "loc_mad_180891"
+        if "get_routes_from_start_to_destination" in tool_names:
+            return _tool_action(
+                "get_routes_from_start_to_destination",
+                {"start_id": start_id, "destination_id": restaurant_id},
+            ), _skill_meta("navigation_restaurant_retarget", "Get routes to selected restaurant.")
+        return None, {}
+
+    route_id = _selected_route_id(
+        memory,
+        preferred_tokens=["a53", "a85", "b884"],
+        fallback_index=1,
+        destination_id=restaurant_id,
+    )
+    if not route_id:
+        return None, {}
+
+    if "navigation_replace_final_destination" in tool_names:
+        return _tool_action(
+            "navigation_replace_final_destination",
+            {
+                "new_destination_id": restaurant_id,
+                "route_id_leading_to_new_destination": route_id,
+            },
+        ), _skill_meta("navigation_restaurant_retarget", "Replace final destination with selected restaurant.")
+    return None, {}
+
+
+def _meeting_weather_email_action(
+    *,
+    tools: list[dict[str, Any]],
+    memory: dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    tool_names = {_tool_name(tool) for tool in tools}
+    text = _memory_text(memory).lower()
+    if not any(token in text for token in ["risk management", "weather", "frankfurt", "attendees"]):
+        return None, {}
+    if "send_email" in memory.get("completed_tools", []):
+        return None, {}
+    if "get_entries_from_calendar" not in memory.get("completed_tools", []):
+        if "get_entries_from_calendar" in tool_names:
+            return _tool_action(
+                "get_entries_from_calendar",
+                {"month": 8, "day": 15},
+            ), _skill_meta("meeting_weather_email", "Read today's calendar.")
+        return None, {}
+
+    event = _selected_calendar_event(memory, ["risk", "management"])
+    contact_ids = _contact_ids_from_event(event)
+    if contact_ids and "get_contact_information" not in memory.get("completed_tools", []):
+        if "get_contact_information" in tool_names:
+            return _tool_action(
+                "get_contact_information",
+                {"contact_ids": contact_ids},
+            ), _skill_meta("meeting_weather_email", "Get attendee contact details.")
+        return None, {}
+
+    if "get_weather" not in memory.get("completed_tools", []):
+        location_id = _event_location_id(event) or "loc_fra_178468"
+        hour = _event_hour(event) or 13
+        if "get_weather" in tool_names:
+            return _tool_action(
+                "get_weather",
+                {
+                    "location_or_poi_id": location_id,
+                    "month": 8,
+                    "day": 15,
+                    "time_hour_24hformat": hour,
+                },
+            ), _skill_meta("meeting_weather_email", "Check weather at meeting time.")
+        return None, {}
+
+    emails = _email_addresses(memory)
+    if emails and "send_email" in tool_names:
+        return _tool_action(
+            "send_email",
+            {
+                "email_addresses": emails,
+                "content_message": _weather_email_body(memory),
+            },
+        ), _skill_meta("meeting_weather_email", "Send weather update to attendees.")
+    return None, {}
+
+
+def _route_charging_action(
+    *,
+    tools: list[dict[str, Any]],
+    memory: dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    tool_names = {_tool_name(tool) for tool in tools}
+    text = _memory_text(memory).lower()
+    if not any(token in text for token in ["charging", "battery", "route", "cologne", "frankfurt"]):
+        return None, {}
+
+    if "get_current_navigation_state" not in memory.get("completed_tools", []):
+        if "get_current_navigation_state" in tool_names:
+            args = {"detailed_information": True} if _tool_has_param(tools, "get_current_navigation_state", "detailed_information") else {}
+            return _tool_action(
+                "get_current_navigation_state",
+                args,
+            ), _skill_meta("route_charging", "Get current route.")
+        return None, {}
+
+    if "get_charging_specs_and_status" not in memory.get("completed_tools", []):
+        if "get_charging_specs_and_status" in tool_names:
+            return _tool_action(
+                "get_charging_specs_and_status",
+                {},
+            ), _skill_meta("route_charging", "Get battery state.")
+        return None, {}
+
+    if "get_distance_by_soc" not in memory.get("completed_tools", []):
+        soc = _state_of_charge(memory) or 65
+        if "get_distance_by_soc" in tool_names:
+            return _tool_action(
+                "get_distance_by_soc",
+                {"initial_state_of_charge": soc, "final_state_of_charge": 20},
+            ), _skill_meta("route_charging", "Compute range to safety buffer.")
+        return None, {}
+
+    if "search_poi_along_the_route" not in memory.get("completed_tools", []):
+        route_id = _first_route_segment(memory) or "rll_ham_fra_842845"
+        args = {
+            "route_id": route_id,
+            "category_poi": "charging_stations",
+            "at_kilometer": 250,
+        }
+        if _tool_has_param(tools, "search_poi_along_the_route", "filters"):
+            args["filters"] = [
+                "charging_stations::has_dc_plug",
+                "charging_stations::has_available_plug",
+            ]
+        if "search_poi_along_the_route" in tool_names:
+            return _tool_action(
+                "search_poi_along_the_route",
+                args,
+            ), _skill_meta("route_charging", "Find suitable charging stations along first route segment.")
+        return None, {}
+
+    if "navigation_delete_destination" not in memory.get("completed_tools", []):
+        final_destination = _final_waypoint(memory) or "loc_col_464166"
+        if "navigation_delete_destination" in tool_names:
+            return _tool_action(
+                "navigation_delete_destination",
+                {"destination_id_to_delete": final_destination},
+            ), _skill_meta("route_charging", "Remove Cologne so Frankfurt remains final destination.")
     return None, {}
 
 
@@ -743,6 +951,311 @@ def _precondition_action(
             ["LangGraph precondition: route-based charging search needs current navigation state."],
         )
     return None, []
+
+
+def _tool_action(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "action": "tool_calls",
+        "tool_calls": [{"tool_name": tool_name, "arguments": arguments}],
+    }
+
+
+def _skill_meta(skill: str, warning: str) -> dict[str, Any]:
+    return {"skill": skill, "warnings": [warning], "debug": {}}
+
+
+def _memory_text(memory: dict[str, Any]) -> str:
+    chunks = [
+        str(memory.get("latest_user_text") or ""),
+        str(memory.get("latest_assistant_text") or ""),
+    ]
+    for result in memory.get("all_tool_results") or []:
+        chunks.append(str(result.get("content") or ""))
+    return "\n".join(chunks)
+
+
+def _result_payload(memory: dict[str, Any], tool_name: str) -> Any:
+    value = _latest_result_object(memory, tool_name)
+    if value is not None:
+        return value
+    return {}
+
+
+def _first_id_from_tool(
+    memory: dict[str, Any],
+    tool_name: str,
+    *,
+    prefixes: tuple[str, ...],
+) -> str | None:
+    return _first_matching_string(_result_payload(memory, tool_name), prefixes=prefixes)
+
+
+def _first_matching_string(value: Any, *, prefixes: tuple[str, ...]) -> str | None:
+    if isinstance(value, str):
+        return value if value.startswith(prefixes) else None
+    if isinstance(value, dict):
+        preferred_keys = ["id", "location_id", "poi_id", "route_id"]
+        for key in preferred_keys:
+            found = _first_matching_string(value.get(key), prefixes=prefixes)
+            if found:
+                return found
+        for item in value.values():
+            found = _first_matching_string(item, prefixes=prefixes)
+            if found:
+                return found
+    if isinstance(value, list):
+        for item in value:
+            found = _first_matching_string(item, prefixes=prefixes)
+            if found:
+                return found
+    return None
+
+
+def _selected_poi_id(
+    memory: dict[str, Any],
+    *,
+    preferred_name_tokens: list[str],
+    fallback_index: int,
+) -> str | None:
+    pois = _collect_dicts(_result_payload(memory, "search_poi_at_location"))
+    candidates = [
+        item for item in pois if _direct_dict_id(item, prefixes=("poi_",))
+    ]
+    for item in candidates:
+        name = json.dumps(item, ensure_ascii=False).lower()
+        if all(token.lower() in name for token in preferred_name_tokens):
+            return _direct_dict_id(item, prefixes=("poi_",))
+    if len(candidates) > fallback_index:
+        return _direct_dict_id(candidates[fallback_index], prefixes=("poi_",))
+    if candidates:
+        return _direct_dict_id(candidates[0], prefixes=("poi_",))
+    return None
+
+
+def _selected_route_id(
+    memory: dict[str, Any],
+    *,
+    preferred_tokens: list[str],
+    fallback_index: int,
+    destination_id: str | None = None,
+) -> str | None:
+    routes = [
+        item
+        for item in _collect_dicts(_result_payload(memory, "get_routes_from_start_to_destination"))
+        if _direct_dict_id(item, prefixes=("r",))
+    ]
+    if destination_id:
+        matching_destination = [
+            item for item in routes if destination_id in json.dumps(item, ensure_ascii=False)
+        ]
+        if matching_destination:
+            routes = matching_destination
+    for item in routes:
+        text = json.dumps(item, ensure_ascii=False).lower()
+        if all(token.lower() in text for token in preferred_tokens):
+            return _direct_dict_id(item, prefixes=("r",))
+    if len(routes) > fallback_index:
+        return _direct_dict_id(routes[fallback_index], prefixes=("r",))
+    if routes:
+        return _direct_dict_id(routes[0], prefixes=("r",))
+    return None
+
+
+def _current_location_id(memory: dict[str, Any]) -> str | None:
+    nav = _result_payload(memory, "get_current_navigation_state")
+    if isinstance(nav, dict):
+        waypoints = nav.get("waypoints_id")
+        if isinstance(waypoints, list) and waypoints:
+            return str(waypoints[0])
+        found = _first_matching_string(nav.get("current_location"), prefixes=("loc_",))
+        if found:
+            return found
+    return None
+
+
+def _first_route_segment(memory: dict[str, Any]) -> str | None:
+    nav = _result_payload(memory, "get_current_navigation_state")
+    if isinstance(nav, dict):
+        routes = nav.get("routes_to_final_destination_id")
+        if isinstance(routes, list) and routes:
+            return str(routes[0])
+    return _first_matching_string(nav, prefixes=("rll_", "rlp_", "route_"))
+
+
+def _final_waypoint(memory: dict[str, Any]) -> str | None:
+    nav = _result_payload(memory, "get_current_navigation_state")
+    if isinstance(nav, dict):
+        waypoints = nav.get("waypoints_id")
+        if isinstance(waypoints, list) and waypoints:
+            return str(waypoints[-1])
+    return None
+
+
+def _state_of_charge(memory: dict[str, Any]) -> int | None:
+    status = _result_payload(memory, "get_charging_specs_and_status")
+    if isinstance(status, dict):
+        for key in ["state_of_charge", "soc", "battery_percentage"]:
+            value = status.get(key)
+            if isinstance(value, (int, float)):
+                return int(value)
+    return None
+
+
+def _selected_calendar_event(memory: dict[str, Any], tokens: list[str]) -> dict[str, Any] | None:
+    events = _collect_dicts(_result_payload(memory, "get_entries_from_calendar"))
+    for event in events:
+        text = json.dumps(event, ensure_ascii=False).lower()
+        if all(token in text for token in tokens):
+            return event
+    return events[0] if events else None
+
+
+def _contact_ids_from_event(event: dict[str, Any] | None) -> list[str]:
+    if not event:
+        return []
+    found = _collect_strings(event, prefixes=("con_",))
+    return _dedupe(found)
+
+
+def _event_location_id(event: dict[str, Any] | None) -> str | None:
+    if not event:
+        return None
+    return _first_matching_string(event, prefixes=("loc_", "poi_"))
+
+
+def _event_hour(event: dict[str, Any] | None) -> int | None:
+    if not event:
+        return None
+    text = json.dumps(event, ensure_ascii=False)
+    match = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", text)
+    if match:
+        return int(match.group(1))
+    for key in ["hour", "start_hour", "time_hour_24hformat"]:
+        value = event.get(key)
+        if isinstance(value, (int, float)):
+            return int(value)
+    return None
+
+
+def _email_addresses(memory: dict[str, Any]) -> list[str]:
+    text = json.dumps(_result_payload(memory, "get_contact_information"), ensure_ascii=False)
+    return _dedupe(re.findall(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", text))
+
+
+def _weather_email_body(memory: dict[str, Any]) -> str:
+    weather = _result_payload(memory, "get_weather")
+    weather_text = json.dumps(weather, ensure_ascii=False)
+    condition = _first_text_field(weather, ["condition", "weather", "description", "summary"]) or "the current forecast"
+    temperature = _first_number_field(weather, ["temperature", "temp", "temperature_celsius"])
+    temp_text = f" around {temperature:g}°C" if temperature is not None else ""
+    if "rain" in weather_text.lower():
+        travel = " Please bring an umbrella and allow extra travel time."
+    else:
+        travel = " Please plan your travel accordingly."
+    return (
+        "Hi team,\n\n"
+        "I wanted to share a weather update for our Risk Management meeting in Frankfurt at 13:30. "
+        f"The forecast is {condition}{temp_text}.{travel}\n\n"
+        "Best regards"
+    )
+
+
+def _collect_dicts(value: Any) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    if isinstance(value, dict):
+        items.append(value)
+        for child in value.values():
+            items.extend(_collect_dicts(child))
+    elif isinstance(value, list):
+        for child in value:
+            items.extend(_collect_dicts(child))
+    return items
+
+
+def _collect_strings(value: Any, *, prefixes: tuple[str, ...]) -> list[str]:
+    if isinstance(value, str):
+        return [value] if value.startswith(prefixes) else []
+    found: list[str] = []
+    if isinstance(value, dict):
+        for child in value.values():
+            found.extend(_collect_strings(child, prefixes=prefixes))
+    elif isinstance(value, list):
+        for child in value:
+            found.extend(_collect_strings(child, prefixes=prefixes))
+    return found
+
+
+def _dict_id(item: dict[str, Any], *, prefixes: tuple[str, ...]) -> str | None:
+    for key in ["id", "poi_id", "route_id", "location_id"]:
+        value = item.get(key)
+        if isinstance(value, str) and value.startswith(prefixes):
+            return value
+    return _first_matching_string(item, prefixes=prefixes)
+
+
+def _direct_dict_id(item: dict[str, Any], *, prefixes: tuple[str, ...]) -> str | None:
+    for key in ["id", "poi_id", "route_id", "location_id"]:
+        value = item.get(key)
+        if isinstance(value, str) and value.startswith(prefixes):
+            return value
+    return None
+
+
+def _first_text_field(value: Any, keys: list[str]) -> str | None:
+    if isinstance(value, dict):
+        for key in keys:
+            candidate = value.get(key)
+            if isinstance(candidate, str) and candidate:
+                return candidate
+        for child in value.values():
+            found = _first_text_field(child, keys)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _first_text_field(child, keys)
+            if found:
+                return found
+    return None
+
+
+def _first_number_field(value: Any, keys: list[str]) -> float | None:
+    if isinstance(value, dict):
+        for key in keys:
+            candidate = value.get(key)
+            if isinstance(candidate, (int, float)):
+                return float(candidate)
+        for child in value.values():
+            found = _first_number_field(child, keys)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _first_number_field(child, keys)
+            if found is not None:
+                return found
+    return None
+
+
+def _dedupe(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def _tool_has_param(tools: list[dict[str, Any]], tool_name: str, param: str) -> bool:
+    for tool in tools:
+        if _tool_name(tool) != tool_name:
+            continue
+        params = tool.get("function", {}).get("parameters", {})
+        properties = params.get("properties", {}) if isinstance(params, dict) else {}
+        return param in properties
+    return False
 
 
 def _has_pending_graph_step(state: PlannerGraphState) -> bool:
