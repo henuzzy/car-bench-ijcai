@@ -88,6 +88,11 @@ class Track1LangGraphWorkflow:
             raise RuntimeError("LangGraph planner completed without a PlannerResult")
         return result
 
+    def reset(self, context_id: str) -> None:
+        # The runtime state lives in the compiled graph checkpointer.  Rebuilding
+        # the graph gives us a clean in-memory checkpoint store.
+        self.graph = self._build_graph()
+
     def _build_graph(self):
         graph = StateGraph(PlannerGraphState)
         graph.add_node("observe_memory", self._observe_memory)
